@@ -1,0 +1,19 @@
+# Kbuild for this lecture's lab.
+#
+# Every .c file in this directory becomes its own module. That is unusual for a kernel Makefile
+# and deliberate here: the repository ships this file and you write the sources, so a fixed list
+# of objects would mean editing the build every time you started an exercise, and would break the
+# build for everyone who has not written all of them yet.
+#
+# Two details in one line, both of which cost an afternoon if you get them wrong.
+#
+# The wildcard is over $(src) rather than the current directory, because kbuild runs this from the
+# kernel's output directory and not from here. Getting that wrong produces an empty list and a
+# build that succeeds having compiled nothing, which is the most confusing possible outcome.
+#
+# The filter-out is because kbuild *generates* a foo.mod.c beside every foo.c it builds. On a
+# clean tree the wildcard is right; on the second build it also matches those generated files and
+# tries to build foo.mod.c as a module of its own, which fails with "missing MODULE_LICENSE()" and
+# "init_module undefined" for a file you did not write. A wildcard over a directory the build
+# writes into has to exclude what the build puts there.
+obj-m += $(patsubst $(src)/%.c,%.o,$(filter-out %.mod.c,$(wildcard $(src)/*.c)))

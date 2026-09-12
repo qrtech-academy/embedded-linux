@@ -1,0 +1,236 @@
+# Appendix A - The Device Model
+How a driver finds its hardware without being told where it is, and what the kernel does with the
+three-way relationship between buses, devices and drivers.
+
+[Appendix B](./b_device_tree.md) is where the description comes from.
+
+The idea to carry: **you do not write code that goes looking for hardware.** You register a driver
+that describes what it can handle, something else registers a device that describes what exists,
+and the kernel calls your `probe` when the two match. Everything in this appendix is a consequence
+of that inversion.
+
+---
+
+## A.1 Three things and a match
+
+|            | Is                                      | Registered by          |
+| ---------- | --------------------------------------- | ---------------------- |
+| **Bus**    | A matching policy                       | The kernel, once       |
+| **Device** | Something that exists                   | Whatever discovered it |
+| **Driver** | Code that can handle a class of devices | Your module            |
+
+Each bus keeps two lists, its devices and its drivers. Whenever either list changes, the bus tries
+to match the new entry against every entry on the other list, and calls `probe` on each success.
+
+**A bus is a matching policy, not a wire.** `platform` is a bus and there is no platform bus in any
+schematic; it is the bus for devices that cannot be discovered, which is most of an SoC. PCI is a
+bus and can enumerate itself. USB is a bus and enumerates on hotplug. What they share is the
+matching machinery, not the electricals.
+
+The consequence people find surprising is the ordering: **the device and the driver can arrive in
+either order.** On the target, the device for `qa-dev` exists from boot and sits there unbound:
+
+```text
+# ls /sys/bus/platform/devices/c000000.qa-dev
+driver_override  modalias  of_node  power  subsystem  uevent
+# ls /sys/bus/platform/devices/c000000.qa-dev/driver
+ls: no such file
+```
+
+Loading a module that registers a matching driver binds it immediately. Load the module first on a
+machine where the device appears later, and it binds then instead. Your `probe` is written the same
+way either way.
+
+![A device from the device tree and a driver with its match table, both pointing down at the platform bus, which compares compatible against every registered driver. A red arrow marked match leads to probe, with a note that everything probe takes with devm_ is released when the bind ends.](./images/device_model.png)
+
+---
+
+## A.2 The tree, in sysfs
+
+`/sys` is the device model made visible, which is why
+[L02](../../L02/appendix/b_proc_sys_dev.md#b4-sys-and-why-it-is-not-proc) could describe it as
+generated rather than written.
+
+| Path                  | Holds                                     |
+| --------------------- | ----------------------------------------- |
+| `/sys/devices/`       | The real tree, by physical topology       |
+| `/sys/bus/*/devices/` | Symlinks, grouped by bus                  |
+| `/sys/bus/*/drivers/` | One directory per registered driver       |
+| `/sys/class/*/`       | Symlinks, grouped by **what a device is** |
+
+The distinction between the last two is worth having. `/sys/bus` groups by *how it is attached*;
+`/sys/class` groups by *what it does*. A serial port reached over USB appears under
+`/sys/bus/usb` and under `/sys/class/tty`, and a program looking for serial ports wants the
+second. [L11](../../L11/README.md) is about getting into `/sys/class` at all.
+
+Every device and driver directory there is a **kobject**, and every kobject is reference counted.
+That is what makes it safe for a process to hold a device open while somebody unbinds its driver:
+the memory is not freed until the last reference goes.
+
+---
+
+## A.3 `probe` and `remove`
+
+```c
+static int qa_probe(struct platform_device *pdev);
+static void qa_remove(struct platform_device *pdev);
+```
+
+`probe` is called once per matching device, and **it can be called more than once**: two of the same
+chip on a board means two calls. So everything it allocates must hang off the device it was given,
+not off a static in your module. A driver with a global `regs` pointer works perfectly until the
+second device appears.
+
+That is what `platform_set_drvdata` and `dev_get_drvdata` are for: one private structure per
+device, retrieved by any callback that is handed the `struct device`.
+
+`remove` must undo what `probe` did, and returns `void` in 6.12: **it is not allowed to fail.** By
+the time it is called the decision has been made, and there is nothing sensible for the driver core
+to do with an error.
+
+### What may be done in probe
+
+`probe` runs in process context and may sleep, which means `GFP_KERNEL`, mutexes and I/O are all
+available. Two things to know:
+
+* **Do not assume a fixed order between devices.** If your device needs a clock provided by another
+  driver that has not probed yet, return `-EPROBE_DEFER` and the core will call you again later.
+  Returning a real error instead makes your driver depend on link order, which is not a thing you
+  control.
+* **Publish last.** Anything that makes the device reachable from userspace, a character device or
+  a sysfs attribute, should be the last thing `probe` does, for the same reason
+  [L05](../../L05/appendix/a_character_devices.md#a3-the-table) gave about `cdev_add`.
+
+---
+
+## A.4 `devm_`, and what it is really attached to
+
+[L06](../../L06/appendix/a_kernel_memory.md#a7-devm_-and-what-it-is-attached-to) introduced these
+and could not use them, because a bare module has no `struct device`. `probe` is handed one, so
+this lecture can.
+
+```c
+priv       = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+priv->regs = devm_platform_ioremap_resource(pdev, 0);
+ret        = devm_request_irq(&pdev->dev, irq, qa_isr, 0, dev_name(&pdev->dev), priv);
+```
+
+Three acquisitions, no error labels, and no `remove` code for any of them. Compare
+[L06 B.7](../../L06/appendix/b_mmio_and_resources.md#b7-the-whole-sequence-and-its-unwind), which
+is the same work with a `goto` ladder underneath it.
+
+**The release happens when the device is unbound from the driver.** Not at module unload, and not
+at process exit. That distinction is testable, and the lab tests it:
+
+```text
+# echo c000000.qa-dev > /sys/bus/platform/drivers/qa_platform/unbind
+qa_platform c000000.qa-dev: removed after 1296 interrupts, 1297 samples
+
+# grep -c c000000.qa-dev /proc/iomem
+0
+# lsmod | grep qa_platform
+qa_platform 12288 0 - Live
+```
+
+The module is **still loaded**. The region and the interrupt are gone, released by the driver core
+walking the device's list of managed resources in reverse, and so are the sysfs attributes, which
+the core removes itself because they came from the driver's `.dev_groups`. Bind it again and
+`probe` runs again and they come back.
+
+That is the whole mechanism: `devm_` builds a list of destructors attached to one device's binding.
+Knowing that is what stops the two surprises, which are things released earlier than expected
+(because something unbound) and things not released at all (because they were attached to the
+wrong device, or acquired without `devm_` at all).
+
+---
+
+## A.5 Matching, and how a module gets loaded
+
+```c
+static const struct of_device_id qa_of_match[] = {
+        { .compatible = "qacademy,qa-dev-1.0" },
+        { }
+};
+MODULE_DEVICE_TABLE(of, qa_of_match);
+```
+
+The table is the driver's statement of what it handles, terminated by an empty entry. The
+`MODULE_DEVICE_TABLE` line does something different and is easy to omit: it copies those strings
+into the module's binary metadata, so that they can be found **without loading the module**.
+
+Four steps turn a device appearing into a module loading, and none of them is magic:
+
+1. `MODULE_DEVICE_TABLE` puts the compatible strings in the `.ko`'s `.modinfo` section.
+2. `depmod` reads every module's metadata and writes `/lib/modules/<version>/modules.alias`.
+3. The device's `uevent` carries a `MODALIAS=` string built from its own `compatible`.
+4. udev matches one against the other and runs `modprobe`.
+
+You can see step 3 on the target:
+
+```text
+# cat /sys/bus/platform/devices/c000000.qa-dev/uevent
+DRIVER=qa_platform
+OF_NAME=qa-dev
+OF_FULLNAME=/platform-bus@c000000/qa-dev@0
+OF_COMPATIBLE_0=qacademy,qa-dev-1.0
+OF_COMPATIBLE_N=1
+MODALIAS=of:Nqa-devT(null)Cqacademy,qa-dev-1.0
+```
+
+This target has no udev, so nothing performs step 4 and modules are loaded by hand. That does not
+change steps 1 to 3, and it is worth knowing which part is missing rather than concluding that
+autoloading is mysterious.
+
+---
+
+## A.6 Whose name is it
+
+A detail that makes the inversion concrete. In [L06](../../L06/README.md) the driver chose the
+name it registered its region under:
+
+```text
+0c000000-0c000fff : qa_mmio
+```
+
+As a platform driver it does not choose, and the entry reads:
+
+```text
+0c000000-0c000fff : c000000.qa-dev qa-dev@0
+ 17:        243          0  GIC-0 144 Level     c000000.qa-dev
+```
+
+The device is named from its **translated address** and its node name, by the driver core, from the
+device tree. Two consequences: the same driver bound to two instances produces two distinguishable
+entries, which a hand-chosen string could not; and `dev_name(&pdev->dev)` is the right thing to
+pass wherever a name is wanted, including to `devm_request_irq`.
+
+The same applies to messages. `dev_info(&pdev->dev, ...)` prints
+`qa_platform c000000.qa-dev: probed, irq 17` and identifies which device spoke;
+[L04's](../../L04/appendix/a_modules.md) `pr_info` cannot, and that stops being a stylistic
+preference the moment there are two of anything.
+
+---
+
+## A.7 Binding by hand
+
+Every driver directory has `bind` and `unbind`:
+
+```text
+# echo c000000.qa-dev > /sys/bus/platform/drivers/qa_platform/unbind
+# echo c000000.qa-dev > /sys/bus/platform/drivers/qa_platform/bind
+```
+
+This is genuinely useful and not just a demonstration. It is how you hand a device to
+`vfio-platform` for passthrough, how you reset a wedged driver without rebooting, and how you test
+that your `remove` path actually works, which is otherwise the least-exercised code in a driver.
+
+`driver_override` in the device's directory forces a specific driver regardless of matching, which
+is the other half of the passthrough workflow.
+
+**Unbind while userspace holds the device open** is the case that catches people. The kobject
+reference count keeps the memory alive, but your `remove` has already run, so any pointer the file
+operations still hold is pointing at released hardware state. Handling that properly is what a
+driver's reference counting is for, and it is why frameworks
+([L11](../../L11/README.md)) are worth using: they have already solved it.
+
+---
