@@ -1,0 +1,13 @@
+# Pinned exactly: these figures are committed as PNGs, and an unpinned upgrade would re-render
+# them slightly differently and show up as a noisy binary diff that says nothing about the course.
+# `make diagrams` followed by `git diff --exit-code` is a check that only means something if a
+# rebuild is byte-identical, and a floating version is the easiest way to lose that.
+#
+# matplotlib draws everything here. This course has no schematics: its figures are block diagrams,
+# timelines, address maps and charts of measured numbers, all of which are rectangles, arrows and
+# axes. So there is no schemdraw dependency, unlike the sibling courses that draw real circuits.
+matplotlib==3.11.1
+
+# Pulled in by matplotlib anyway, but imported directly by style.py to write the figures as palette
+# PNGs, so it is pinned here rather than left to matplotlib's resolver.
+pillow==12.3.0
