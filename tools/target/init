@@ -1,0 +1,58 @@
+#!/bin/sh
+#
+# PID 1 on the target.
+#
+# This is the whole of the boot sequence for the machine the course runs on, and it is short
+# enough to read in one go, which is the point. A reader who has only ever met systemd should be
+# able to see here that "init" is not a special kind of program: it is the first one, it never
+# exits, and everything a running Linux system appears to do for free is something a file like
+# this asked for.
+#
+# Two modes. With qa.test=LNN on the kernel command line it runs that lecture's test script and
+# powers the machine off with the result; without it, it drops to a shell. ci/test.sh uses the
+# first, "make boot" uses the second.
+
+/bin/busybox --install -s /bin 2>/dev/null
+
+mount -t proc     none /proc
+mount -t sysfs    none /sys
+mount -t devtmpfs none /dev 2>/dev/null
+mount -t debugfs  none /sys/kernel/debug 2>/dev/null
+
+mkdir -p /dev/pts
+mount -t devpts none /dev/pts 2>/dev/null
+
+# The kernel command line is the only channel the host has into this machine before it is up,
+# so it is how ci/test.sh says which lecture to run.
+lecture=""
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        qa.test=*) lecture="${arg#qa.test=}" ;;
+    esac
+done
+
+if [ -z "$lecture" ]; then
+    echo
+    echo "QAcademy Linux target. Modules are in /lib/modules; the lab is in /lab."
+    echo "Ctrl-A X quits QEMU."
+    echo
+    exec /bin/sh
+fi
+
+# Everything below is the test path. The markers are what ci/test.sh greps for on the host, and
+# they are printed unconditionally: a run that dies halfway still prints QA-TEST-BEGIN and never
+# prints QA-TEST-END, which is how the host tells a crash apart from a failure.
+echo "QA-TEST-BEGIN $lecture"
+
+if [ -x "/lab/run.sh" ]; then
+    /lab/run.sh
+    status=$?
+else
+    echo "QA-TEST-SKIP no /lab/run.sh for $lecture"
+    status=0
+fi
+
+echo "QA-TEST-END $lecture status=$status"
+
+# poweroff -f, because there is no init to signal and nothing to unmount that matters.
+poweroff -f
