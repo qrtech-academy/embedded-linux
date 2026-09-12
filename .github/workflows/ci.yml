@@ -1,0 +1,111 @@
+# Set pipeline name.
+name: CI
+
+# Set pipeline triggers.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Define pipeline jobs.
+jobs:
+
+  # Everything that needs no compiler: links, the Markdown house rules, and formatting. This is
+  # the job that runs on every push and finishes in under a minute, and it is the one that
+  # catches the things a reader notices first.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # gawk rather than mawk is load-bearing: ci/markdown.sh counts characters and mawk counts
+      # bytes, so the line-length and table rules are wrong without it.
+      - name: Install lint tools
+        run: sudo apt-get update && sudo apt-get install --yes gawk clang-format black
+
+      - name: Lint
+        run: make lint
+
+  # The whole machine: cross toolchain, kernel, QEMU with qa-dev in it, root filesystem, then
+  # every lab that has been written. This is slow, and the cache is what makes it bearable;
+  # the key is the version pins, so moving a pin is what invalidates it.
+  target:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # QA_NO_CONTAINER=1 throughout: the runner is already a controlled Linux, and a container
+      # inside it would buy nothing but a second copy of the same packages.
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev cpio kmod rsync file \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            meson ninja-build pkg-config libglib2.0-dev libpixman-1-dev zlib1g-dev \
+            device-tree-compiler gawk
+
+      - name: Cache the kernel, QEMU and BusyBox trees
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: target-${{ hashFiles('ci/versions.sh', 'kernel/*.config', 'tools/qa-dev/*') }}
+
+      - name: Build the kernel
+        run: make kernel
+        env:
+          QA_NO_CONTAINER: "1"
+
+      - name: Build QEMU with qa-dev
+        run: make qemu
+        env:
+          QA_NO_CONTAINER: "1"
+
+      - name: Build the root filesystem
+        run: make rootfs
+        env:
+          QA_NO_CONTAINER: "1"
+
+      # Both of these skip loudly for every lecture whose lab nobody has written, which for most
+      # of this repository's life is most of them. A green run here means "nothing that exists
+      # is broken", not "everything is finished", and the counts it prints say which.
+      - name: Build the labs
+        run: make build
+        env:
+          QA_NO_CONTAINER: "1"
+
+      - name: Run the labs
+        run: make test
+        env:
+          QA_NO_CONTAINER: "1"
+
+      # The serial log is the only evidence of what happened inside the machine, and a failure
+      # here is invariably a kernel message somebody needs to read.
+      - name: Upload serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serial-logs
+          path: build/test-logs
+          if-no-files-found: ignore
+
+  # The figures are committed, so regenerating them must be a no-op. A lecture illustrated with
+  # a figure whose source has moved on is worse than one with no figure at all.
+  diagrams:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ci/diagrams.sh builds a virtualenv from diagrams/requirements.txt on first use, and
+      # python3-venv is not in the runner image by default.
+      - name: Install python3-venv
+        run: sudo apt-get update && sudo apt-get install --yes python3-venv
+
+      - name: Regenerate the figures
+        run: make diagrams
+
+      # Both trees, because two figures are written into exam/images/ rather than into a lecture:
+      # they are the worked answers to L03's and L05's cross-checks.
+      - name: Fail if any committed figure is out of date
+        run: git diff --exit-code -- 'lectures/*/appendix/images/*.png' 'exam/images/*.png'

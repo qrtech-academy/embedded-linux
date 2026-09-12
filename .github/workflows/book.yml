@@ -1,0 +1,37 @@
+# Set pipeline name.
+name: Book
+
+# Build and publish the book whenever a tag named book-v* is pushed, e.g. book-v1.
+on:
+  push:
+    tags: ["book-v*"]
+
+# Creating a release needs write access to the repository's contents.
+permissions:
+  contents: write
+
+# Define pipeline jobs.
+jobs:
+  # Build the PDF with the tag on its title page, and attach it to a release named after the tag.
+  # The book needs nothing but LaTeX and its fonts: the figures are the committed PNGs, so neither
+  # the kernel nor QEMU is built here.
+  release:
+    name: Build and release the book
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Install LuaLaTeX and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make texlive-luatex texlive-latex-extra fonts-texgyre \
+                                  fonts-texgyre-math fonts-dejavu-core
+      - name: Build
+        run: make -C book VERSION="${{ github.ref_name }}"
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" book/embedded-linux.pdf \
+            --title "Embedded Linux and Kernel Drivers, ${{ github.ref_name }}" \
+            --notes "The course typeset as a book, built from ${{ github.sha }}."
