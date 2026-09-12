@@ -1,0 +1,57 @@
+% Section 11.2, from lectures/L11/README.md: what you should be able to do afterwards, the
+% questions to test yourself, and the next lecture.
+
+\section{Review}
+\label{c11:sec:review}
+
+\needspace{6\baselineskip}
+\subsection*{What you should be able to do now}
+After this chapter, you should be able to:
+\begin{itemize}
+  \item List four things a subsystem provides that a character device does not.
+  \item Say why an \code{ioctl} you invent is a long-term cost, and name the specific portability
+    trap.
+  \item Implement a \code{gpio_chip} and drive it with \code{libgpiod} tools.
+  \item Say what pinctrl is for, and why it is a separate subsystem from GPIO.
+  \item Explain why a driver should acquire a clock rather than write a clock gate register.
+  \item Say what \code{regmap} replaces, and when it is not worth it.
+  \item Register an IIO device with one channel, and read it from sysfs.
+  \item Given an unfamiliar device, name the subsystem it belongs to, or say honestly that none
+    does.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Questions to test yourself}
+\begin{enumerate}
+  \item Your driver exposes a \file{/dev} node and two \code{ioctl}s. Name three things a
+    \code{gpiochip} would have given you that you would otherwise write yourself.
+  \item Why is \file{/sys/class/gpio} deprecated, and what replaced it?
+  \item Two drivers share a clock. One disables it when it suspends. What goes wrong, and which
+    subsystem exists to prevent it?
+  \item What does \code{regmap} know about your device that your read-modify-write code did not?
+  \item An IIO device with a buffer and a trigger delivers samples to userspace. Through what, given
+    that you did not implement \code{read}?
+  \item You have a device that genuinely fits no subsystem. What do you write, and what do you owe
+    the people who will use it?
+\end{enumerate}
+
+\needspace{6\baselineskip}
+\subsection*{Where to look}
+\begin{itemize}
+  \item \file{kernel/qa.config} enables \code{CONFIG_GPIO_CDEV} and not \code{CONFIG_GPIO_SYSFS},
+    with a comment saying why. That choice is the argument of \secref{c11:app:a5} in one line.
+  \item \code{gpioinfo}, \code{gpioget} and \code{gpioset} are not on the target, which carries
+    BusyBox and the course's own programs and nothing else. The shipped tester,
+    \file{lectures/L11/lab/user/qa_gpio_test.c}, speaks the same ABI they do, and is short enough
+    to read in one sitting.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Looking ahead}
+Chapter~\ref{c12:ch} is about:
+\begin{itemize}
+  \item What all of this costs in latency, and how you would know.
+  \item Where latency actually comes from, which is three places and not one.
+  \item What \code{PREEMPT_RT} changes about the driver you have just finished.
+  \item A measurement that is honest about what it cannot see.
+\end{itemize}

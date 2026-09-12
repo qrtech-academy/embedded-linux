@@ -1,0 +1,56 @@
+% Section 8.3, from lectures/L08/README.md: what you should be able to do afterwards, the
+% questions to test yourself, and the next lecture.
+
+\section{Review}
+\label{c8:sec:review}
+
+\needspace{6\baselineskip}
+\subsection*{What you should be able to do now}
+After this chapter, you should be able to:
+\begin{itemize}
+  \item Trace an interrupt from the device's line to your handler, naming the three numbers
+    involved.
+  \item Read \file{/proc/interrupts} and say what a stuck count and a racing count each indicate.
+  \item Register a handler, and say what the \code{dev_id} argument is for on a shared line.
+  \item Say when \code{IRQ_NONE} is the correct return value, and what breaks if you never return
+    it.
+  \item Acknowledge a level-triggered interrupt in the right order, and say what the wrong order
+    loses.
+  \item List what a hard interrupt handler may not do, and derive the list from one fact rather than
+    memorising it.
+  \item Choose between a workqueue and a threaded handler, and defend the choice.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Questions to test yourself}
+\begin{enumerate}
+  \item The device tree says interrupt 112 and \file{/proc/interrupts} says 47. Are they the same
+    interrupt?
+  \item Your handler runs once and the machine then stops responding. What did you forget?
+  \item Why can a hard interrupt handler not call \code{copy_to_user}, given that it is only copying
+    memory?
+  \item On a shared line, your handler always returns \code{IRQ_HANDLED}. Describe the symptom on
+    the \emph{other} device sharing that line.
+  \item What is the difference between a tasklet and a workqueue, in terms of what each may do?
+  \item You measure 9,847 interrupts where you predicted 10,000. Name two mechanisms that could
+    account for the difference, and say how you would tell which it was.
+\end{enumerate}
+
+\needspace{6\baselineskip}
+\subsection*{Where to look}
+\begin{itemize}
+  \item \file{tools/qa-dev/qa-dev.h} is the register map, and documents \code{IRQ_STATUS} as
+    write-one-to-clear.
+  \item The device's own model, \file{tools/qa-dev/qa-dev.c}, is readable and shows exactly when the
+    line is raised and lowered. Reading the hardware's source is a luxury you will not have again.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Looking ahead}
+Chapter~\ref{c9:ch} is about:
+\begin{itemize}
+  \item The other half: a reader that wants data which does not exist yet.
+  \item Wait queues, and the lost wakeup that is a bug rather than bad luck.
+  \item \code{poll}, and how one thread waits on your device and a socket at once.
+  \item Jiffies, \code{ktime}, and the difference between delaying and sleeping.
+\end{itemize}

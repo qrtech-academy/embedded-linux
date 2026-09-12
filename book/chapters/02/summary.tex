@@ -1,0 +1,58 @@
+% Section 2.3, from lectures/L02/README.md: what you should be able to do afterwards, the
+% questions to test yourself, and the next lecture.
+
+\section{Review}
+\label{c2:sec:review}
+
+\needspace{6\baselineskip}
+\subsection*{What you should be able to do now}
+After this chapter, you should be able to:
+\begin{itemize}
+  \item Describe what the kernel is asked to do when a shell builds a two-stage pipeline.
+  \item Say what \file{/proc/uptime} is, and demonstrate that reading it opens no file on any disk.
+  \item State the difference between \file{/proc} and \file{/sys} in terms of where their contents
+    come from.
+  \item Read \code{ls -l /dev/null} and say what each field means, including the two that are not a
+    size.
+  \item Find, on a running system, the kernel version, the boot command line, the CPU count, the
+    memory size, and the number of context switches since boot.
+  \item Say what BusyBox trades away, with a number rather than an adjective.
+  \item Say what \code{kill -9 1} does, and what does end a Linux system.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Questions to test yourself}
+\begin{enumerate}
+  \item \code{cat /proc/uptime} prints two numbers. Where were those numbers a microsecond before
+    you ran it?
+  \item Why can \code{cd} not be an ordinary program in \file{/bin}?
+  \item A file in \file{/sys} contains \code{1}. What are you allowed to assume about what writing
+    \code{0} to it does?
+  \item What is the difference between a process that is stopped, a process that is sleeping, and a
+    process that is a zombie? Which of the three can you kill?
+  \item You run \code{kill -9 1} as root and the system carries on. Why, and what would have ended
+    it?
+  \item Your target has \file{/dev/ttyAMA0} with major 204 and minor 64. What do those two numbers
+    select?
+  \item Why does an initramfs need \file{/proc} to exist as an empty directory before anything
+    mounts it?
+\end{enumerate}
+
+\needspace{6\baselineskip}
+\subsection*{Where to look}
+\begin{itemize}
+  \item \Secref{c1:app:a8} introduced four of these files; this chapter is the rest of them.
+  \item \code{busybox --help} on the target lists what this particular userland can do.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Looking ahead}
+Chapter~\ref{c3:ch} is about:
+\begin{itemize}
+  \item The kernel as a program: what it is made of and how its source is arranged.
+  \item Kconfig, and what ``configuring a kernel'' actually chooses between.
+  \item Why the kernel you built is 24 MB, and what that buys.
+  \item Measuring what a single config option costs, in bytes and in modules.
+\end{itemize}
+This chapter was about interrogating a system somebody else configured. Chapter~\ref{c3:ch} is
+about becoming the person who configured it.

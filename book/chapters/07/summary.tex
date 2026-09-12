@@ -1,0 +1,53 @@
+% Section 7.3, from lectures/L07/README.md: what you should be able to do afterwards, the
+% questions to test yourself, and the next lecture.
+
+\section{Review}
+\label{c7:sec:review}
+
+\needspace{6\baselineskip}
+\subsection*{What you should be able to do now}
+After this chapter, you should be able to:
+\begin{itemize}
+  \item Name five sources of concurrency in a kernel and say which of them a single-CPU kernel has.
+  \item Say why making every field of a structure atomic does not make the structure thread-safe.
+  \item Choose between a spinlock and a mutex, and give the one-sentence reason.
+  \item Say what \code{spin_lock_irqsave} saves and restores, and what goes wrong without it.
+  \item Recognise atomic context in unfamiliar code, and list what may not be done there.
+  \item Read a lockdep report and say which two locks, taken in which orders, it is complaining
+    about.
+  \item Explain why lockdep can report a deadlock that has not happened.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Questions to test yourself}
+\begin{enumerate}
+  \item Your driver works perfectly on a single-CPU target and corrupts data on a dual-CPU one. Name
+    three things that changed, only one of which is ``two things run at once''.
+  \item Why is \code{atomic_read} followed by \code{atomic_set} not an atomic read-modify-write?
+  \item You hold a spinlock and call \code{kmalloc(GFP_KERNEL)}. What is wrong, and when will you
+    find out?
+  \item What exactly does a spinlock do to the CPU that is waiting for it? Why is that acceptable
+    for short sections and catastrophic for long ones?
+  \item Two functions take locks A and B in opposite orders, and the code has run in production for
+    two years without deadlocking. Is it correct?
+  \item Why does \code{CONFIG_PROVE_LOCKING} make a kernel slower, and why would you still enable it
+    during development?
+\end{enumerate}
+
+\needspace{6\baselineskip}
+\subsection*{Where to look}
+\begin{itemize}
+  \item \file{kernel/qa.config} turns on \code{CONFIG_PROVE_LOCKING} and
+    \code{CONFIG_DEBUG_ATOMIC_SLEEP} for this course, with a comment on why. Those two options are
+    the reason the exercises in this chapter produce output rather than silence.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Looking ahead}
+Chapter~\ref{c8:ch} is about:
+\begin{itemize}
+  \item The other source of concurrency, and the one you cannot schedule.
+  \item What an interrupt handler may not do, and what it must do before it returns.
+  \item Four places to put work that does not belong in a handler.
+  \item Why the default answer is now a thread.
+\end{itemize}

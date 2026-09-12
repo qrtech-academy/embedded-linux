@@ -1,0 +1,298 @@
+% Section 8.4, from lectures/L08/appendix/c_exercises.md.
+
+\section{Exercises}
+\label{c8:sec:exercises}\label{c8:app:c}
+
+\begin{aside}
+Nine, ending with the Cross-check. Do them in order; Exercise~\ref{c8:ex:6} onwards need the target
+running.
+
+Where an exercise can be checked mechanically, a \textbf{Check yourself} line says how.
+
+\textbf{A warning about Exercise~\ref{c8:ex:8}.} It asks you to load a handler that never
+acknowledges its device. That wedges the machine, on purpose, and the only way out is a reboot. A
+few seconds here; do not run the equivalent against anything you cannot power-cycle.
+
+\textbf{Solutions.} The exercises that are not Code are answered in \secref{sol:sec:c8}. The Code
+exercises have no solution: each is checked by running it, as its Check yourself line says.
+\end{aside}
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{The three numbers}{Recall}
+\label{c8:ex:1}
+
+\xpart{a} The device tree says \code{interrupts = <0 112 4>} and \file{/proc/interrupts} says
+\code{17 ... GIC-0 144}. Explain all three numbers and where each comes from.
+
+\xpart{b} $112 + 32 = 144$. What is the 32?
+
+\xpart{c} Which of the three changes if you boot the same kernel on the same machine with one extra
+device present? Why?
+
+\xpart{d} A datasheet documents the device's interrupt as 112. A colleague greps
+\file{/proc/interrupts} for 112, finds nothing, and concludes the driver is not loaded. What has
+gone wrong with their reasoning?
+
+\xpart{e} What does the third cell, \code{4}, mean, and what would \code{1} have meant instead?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{Reading \code{/proc/interrupts}}{Recall}
+\label{c8:ex:2}
+
+\begin{console}
+ 17:       1789          0  GIC-0 144 Level     qa_irq
+\end{console}
+
+\xpart{a} Name every field.
+
+\xpart{b} The second CPU's count is 0. Give two different explanations, and say how you would tell
+them apart.
+
+\xpart{c} The count is not moving and the device is not working. What have you ruled out, and what
+is still possible?
+
+\xpart{d} The count is increasing by millions per second. What is almost certainly wrong?
+
+\xpart{e} You unload your module and load it again. Does the count restart from zero? What does that
+imply for any measurement of an interrupt rate?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{The acknowledgement}{Hand calculation}
+\label{c8:ex:3}
+
+\code{qa-dev}'s \code{IRQ_STATUS} is write-one-to-clear. At the moment your handler runs, it holds
+\code{0b01} (\code{QA_DEV_IRQ_SAMPLE}). For \textbf{c)} to \textbf{e)}, suppose the bit is cleared
+only by a write to it; \textbf{f)} is about the other way this device has.
+
+\xpart{a} Your handler writes \code{0xFFFFFFFF} to it. What happens to the \code{SAMPLE} bit? What
+happens to an \code{OVERRUN} that the device set one microsecond after your read?
+
+\xpart{b} Your handler writes back exactly the value it read. Same two questions.
+
+\xpart{c} Your handler acknowledges first and then drains the FIFO. Describe the sequence of events
+that produces a spurious interrupt, and say whether any data is lost.
+
+\xpart{d} Your handler drains the FIFO and then acknowledges with a value it read \emph{before}
+draining. Describe the sequence that loses an event.
+
+\xpart{e} Of \textbf{c)} and \textbf{d)}, one is survivable and one is not. Which, and why?
+
+\xpart{f} For this device there is a second way to clear \code{IRQ_SAMPLE} that involves no write to
+\code{IRQ_STATUS} at all. What is it, and how would you find that out from
+\file{tools/qa-dev/qa-dev.c}?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{An interrupt budget}{Hand calculation}
+\label{c8:ex:4}
+
+A device raises an interrupt every 250 microseconds. Its handler takes 8 microseconds.
+
+\xpart{a} How many interrupts per second, and what fraction of one CPU does the handler consume?
+
+\xpart{b} The handler grows to 40 microseconds. Recompute both.
+
+\xpart{c} At what handler duration does the CPU do nothing but service this device?
+
+\xpart{d} The device's FIFO holds 16 samples and it produces one per interrupt. How long can the
+system ignore the device before samples are dropped?
+
+\xpart{e} You move 30 of the 40 microseconds into a threaded handler. Which of your answers change,
+and which does not? In particular, does the \emph{system's} total work change?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{Where does the work go}{Design}
+\label{c8:ex:5}
+
+For each, choose hard handler, threaded handler, or workqueue, and justify it in one sentence.
+
+\xpart{a} Reading a status register and clearing an interrupt.
+
+\xpart{b} Copying 4 KB out of the device's FIFO into a driver buffer.
+
+\xpart{c} Waking a userspace reader that is blocked on \code{read()}.
+
+\xpart{d} Allocating a buffer with \code{GFP_KERNEL}.
+
+\xpart{e} Retrying a failed transfer after a 10 ms delay.
+
+\xpart{f} Updating a statistics counter.
+
+\xpart{g} Logging an error with \code{dev_err}.
+
+Then: \textbf{h)} two of your answers would be illegal in a hard handler. Which, and what exactly
+goes wrong? \textbf{i)} Which config option this course enables would tell you?
+
+% ------------------------------------------------------------------------------------------
+\exercise{Take the interrupt}{Code}
+\label{c8:ex:6}
+
+Write \file{lectures/L08/lab/qa_irq.c}. It must:
+\begin{itemize}
+  \item Find the device's node with \code{of_find_compatible_node} using
+    \code{QA_DEV_DT_COMPATIBLE}, get its address with \code{of_address_to_resource}, and its
+    interrupt with \code{irq_of_parse_and_map}. Print both.
+  \item Claim and map the registers as in Chapter~\ref{c6:ch}, and check the identity register.
+  \item Register a handler with \code{request_irq}, named \code{qa_irq}.
+  \item Program \code{PERIOD_NS} from a module parameter (default 1000000) and set \code{ENABLE |
+    IRQ_EN}.
+  \item In the handler: read \code{IRQ_STATUS}, \textbf{return \code{IRQ_NONE} if nothing is
+    pending}, acknowledge with the value you read, then drain the FIFO counting samples.
+  \item Count hard interrupts and samples in \code{atomic_t}s and print them on unload.
+  \item Take a \code{threaded} module parameter which, when set, uses \code{request_threaded_irq}
+    with \code{IRQF_ONESHOT} and does the draining in the threaded half.
+  \item Disable the device and \code{free_irq} on unload, in that order.
+\end{itemize}
+
+\checkyourself \code{make test L=L08} reports \textbf{PASSED}, with nine checks.
+\file{/proc/interrupts} gains a \code{qa_irq} line whose count climbs at roughly a thousand per
+second.
+
+\xpart{a} Why must the device be disabled before \code{free_irq}, and not after?
+
+\xpart{b} Your handler returns \code{IRQ_HANDLED} unconditionally instead of checking. On this
+target nothing appears to break. Explain what you have broken anyway, and on what kind of system it
+would show up.
+
+% ------------------------------------------------------------------------------------------
+\exercise{The threaded half}{Code}
+\label{c8:ex:7}
+
+With \code{threaded=1}:
+
+\xpart{a} Find the kernel thread with \code{ps}. What is it called, and what does the name tell you?
+
+\xpart{b} The hard handler now returns \code{IRQ_WAKE_THREAD}. Where must the acknowledgement
+happen, and what happens if you leave it in the threaded half without \code{IRQF_ONESHOT}?
+
+\xpart{c} Measure the interrupt rate both ways over two seconds. Is the threaded version slower? Was
+that your prediction?
+
+\xpart{d} Name two things the threaded handler can do that the hard one cannot, and one thing it
+gives you that a workqueue does not.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{The interrupt that never stops}{Design}
+\label{c8:ex:8}
+
+\textbf{Read the warning at the top of this section.}
+
+\xpart{a} Remove everything in your handler that clears \code{IRQ_SAMPLE}: the acknowledgement, and
+the drain with it, because emptying the FIFO clears the bit too (Exercise~\ref{c8:ex:3}, part
+\textbf{f)}). Rebuild, load it, and record what happens to \code{insmod}, and how long it takes
+before the console says anything.
+
+\xpart{b} The message that eventually appears mentions neither interrupts nor your driver. Quote it,
+and explain the connection.
+
+\xpart{c} This produces no failing test. \code{make test L=L08} reports something other than a
+failure; what, and why does the harness draw that distinction?
+
+\xpart{d} From another machine you cannot get, but suppose you could run one command on this one
+before it died. Which, and what would it have shown?
+
+\xpart{e} \code{qa-dev} is level-triggered. Would the same missing acknowledgement wedge an
+edge-triggered device? What would happen instead?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent]{Interrupts counted two ways}{Cross-check}
+\label{c8:ex:9}
+
+Predict a count from the period, measure it, and account for a shortfall that is larger than
+measurement error and entirely explicable.
+
+\xpart{a} \textbf{Predict.} Your device is programmed with \code{PERIOD_NS=1000000}. How many
+interrupts should it raise in exactly two seconds? Write the number down.
+
+\xpart{b} \textbf{Measure.} Load your module, then take a \textbf{delta} across a measured interval:
+
+\begin{shell}
+n0=$(grep qa_irq /proc/interrupts | awk '{ print $2 + $3 }')
+t0=$(cut -d' ' -f1 /proc/uptime)
+sleep 2
+n1=$(grep qa_irq /proc/interrupts | awk '{ print $2 + $3 }')
+t1=$(cut -d' ' -f1 /proc/uptime)
+\end{shell}
+
+\noindent Compute the actual elapsed time and the actual count. Do this three times.
+
+\xpart{c} \textbf{Reconcile.} The measured count is short by something like 15\%, consistently.
+Answer each:
+\begin{itemize}
+  \item Why a delta rather than reading the count once? What did \secref{c8:app:a2} say happens
+    across a reload?
+  \item Your elapsed time is not 2.00 s. Does using the measured elapsed time rather than 2.00
+    remove the shortfall? By how much does it move it?
+  \item The remaining shortfall is not noise: three runs agree to within a few percent of each
+    other. So it is systematic. \textbf{Before reading further, write down a hypothesis.}
+\end{itemize}
+
+\xpart{d} \textbf{Find out.} The device is not a black box; its source is
+\file{tools/qa-dev/qa-dev.c}. Find \code{qa_dev_arm_timer} and read the one line that decides when
+the next interrupt happens.
+\begin{itemize}
+  \item Is the next interrupt scheduled relative to \emph{when the last one fired}, or to an
+    absolute schedule?
+  \item Given that, what is the actual interval between two interrupts, in terms of the programmed
+    period and anything else?
+  \item Does that account for a 15\% shortfall at a 1 ms period? Estimate the missing term and say
+    whether it is a plausible number for this system.
+\end{itemize}
+
+\xpart{e} \textbf{Test the explanation, and watch it fail.} A relative re-arm means each interval is
+\code{period + overhead}, so the model predicts a \textbf{constant} overhead: a large shortfall at
+short periods and a small one at long ones.
+
+Run it at \code{period_ns=10000000} (10 ms), \code{1000000} (1 ms) and \code{100000} (0.1 ms). For
+each, compute the shortfall \emph{and} the overhead your model implies, which is \code{(elapsed /
+count) - period}.
+
+The measured result on this target:
+
+\begin{narrowtable}{@{}lrrr@{}}
+  \thead{Period} & \thead{Count in \textasciitilde{}2.1 s} & \thead{Shortfall} & \thead{Implied overhead} \\
+  \midrule
+  10 ms & 190 & 8.7\% & 947 us \\
+  1 ms & 1731 & 17.6\% & 213 us \\
+  0.1 ms & 13085 & 38.6\% & 63 us \\
+\end{narrowtable}
+
+\noindent \textbf{The implied overhead is not constant. It is larger at longer periods, which is
+backwards.} The relative re-arm is real and is part of the answer, and it is plainly not the whole
+answer.
+
+Do not resolve this by inventing a mechanism. Instead, answer:
+\begin{itemize}
+  \item What would the table look like if a fixed per-interrupt overhead were the only effect?
+  \item Your driver is one of at least three things in the measurement: the driver, the kernel's
+    timer and scheduler, and QEMU. Which of the three does your \file{/proc/uptime} measurement
+    include?
+  \item At 10 ms the guest is idle almost all the time and at 0.1 ms it is not. Why might
+    \emph{that} affect how promptly an emulated timer is serviced?
+  \item What experiment would separate the device's behaviour from the emulator's? Name one you
+    could run, and one you could not run here at all.
+\end{itemize}
+
+\xpart{f} \textbf{The fast end is a different effect.} At 0.1 ms compare the driver's own two
+counters:
+
+\begin{console}
+hard=13708  samples=14389
+\end{console}
+
+\noindent More samples arrived than interrupts were taken.
+\begin{itemize}
+  \item How can one interrupt deliver more than one sample? Answer in terms of level triggering and
+    when the line is re-asserted.
+  \item At 1 ms the same two counters are equal. What changed?
+  \item Which status bit would tell you the device had given up and started dropping samples, and
+    did it get set?
+\end{itemize}
+
+\xpart{g} A colleague reports ``the device is dropping 15\% of its interrupts, the driver is
+broken''. There are at least three things wrong with that sentence. Rewrite it so that every claim
+in it is supported by a measurement you have actually taken, and say what you would still not know.
+
+\xpart{h} You are asked for ``the interrupt latency of this device'' for a datasheet. Given
+everything above, say what you would put, what conditions you would state alongside it, and what you
+would refuse to claim. Chapter~\ref{c12:ch} is the chapter that measures this properly, using a
+register that does not exist on real hardware; say why that register is necessary.

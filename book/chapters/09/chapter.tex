@@ -1,0 +1,47 @@
+% Chapter 9, typeset from lectures/L09: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{Sleeping, Waiting, and Time}
+\label{c9:ch}
+
+{\large\itshape The half the software drives: a reader that wants data which does not exist
+yet.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item What sleeping is: a task state, a queue, and a scheduler that stops choosing you.
+  \item Wait queues, and the condition that is re-tested after every wake.
+  \item The lost wakeup: why the obvious flag-and-sleep is wrong every time, not rarely.
+  \item Completions, and when they are the simpler answer.
+  \item Blocking \code{read()}, \code{O_NONBLOCK}, and \code{-EAGAIN} at the right moment.
+  \item \code{poll}, and what a driver must implement for \code{select} to work on it.
+  \item Signals, \code{-ERESTARTSYS}, and an interruptible sleep that gets interrupted.
+  \item Jiffies, \code{HZ}, \code{ktime}; delaying against sleeping; timers against hrtimers.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is the other half of Chapter~\ref{c8:ch}: a program has asked for data that does not
+exist yet, and something has to happen to it in the meantime. It explains what sleeping is, a task
+state, a queue, and a scheduler that stops choosing you, and why the obvious test-then-sleep loses
+its wakeup; what \code{wait_event_interruptible} expands to, and which line of it closes the window;
+how a blocking \code{read()} must answer \code{O_NONBLOCK} and a signal; and what \code{poll} buys.
+Then it turns to time: jiffies and \code{HZ}, \code{ktime} for measuring, delaying against
+sleeping, timers against hrtimers, and why \code{msleep(1)} on this course's kernel takes eight
+milliseconds.
+
+Read \secref{c9:app:a} first; it is sleeping and wait queues. \Secref{c9:app:b} is time, delays and
+timers, with the course's measurement of what each kind of sleep actually costs. The lab is
+specified by Exercises~\ref{c9:ex:6} and~\ref{c9:ex:7}: the driver from Chapter~\ref{c8:ch} with a
+character device added, whose \code{read} blocks until the interrupt has data for it and which
+implements \code{poll}, checked by the userspace tester \code{qa_wait_test} that ships with the
+course; and a module that measures the sleeps. The exercises in \secref{c9:sec:exercises} end with
+the Cross-check: predict what \code{msleep(1)}, \code{msleep(4)} and \code{msleep(10)} cost given
+\code{HZ}, then measure them. One call takes eight times what it asks for, and two of the three
+answers are the same number. The lab is done when \code{make test L=L09} reports \textbf{PASSED},
+including the \code{poll} test driven from userspace.
+
+\input{chapters/09/sleeping}
+\input{chapters/09/time}
+\input{chapters/09/summary}
+\input{chapters/09/exercises}

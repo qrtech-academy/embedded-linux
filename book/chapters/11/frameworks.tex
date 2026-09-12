@@ -1,0 +1,327 @@
+% Section 11.1, from lectures/L11/appendix/a_frameworks.md.
+
+\section{Kernel Frameworks}
+\label{c11:app:a}
+
+Why your driver probably should not be a character device, what a subsystem gives you in exchange
+for implementing its interface, and how to tell which one a device belongs to.
+
+The argument in one sentence: \textbf{a character device is an interface you invent and then
+maintain forever; a framework is an interface that already exists and that other people's tools
+already speak.}
+
+\subsection{What you have, and what you do not}
+\label{c11:app:a1}
+
+By Chapter~\ref{c10:ch} the driver works. It probes off the device tree and services its
+interrupt, and in Chapter~\ref{c9:ch} it presented \file{/dev/qa_wait} with a \code{read()} you
+wrote. Nothing is broken.
+
+Now list what it does not have:
+\begin{itemize}
+  \item No way for a program that does not know about it to find it.
+  \item No documented interface. Yours exists in your head and in the source.
+  \item No existing tools. Every user writes their own reader.
+  \item No power management. Suspend and resume do nothing.
+  \item No way to express what the device \emph{is}, only what it does.
+\end{itemize}
+Each of those is something a subsystem provides, and provides identically for every driver in it.
+That is the trade: \textbf{you implement an interface someone else designed, and you stop having to
+design, document, version and support one of your own.}
+
+\lecturefigure{lectures/L11/appendix/images/framework_stack.png}
+  {Two columns for the same device. A character device of your own needs open and release, read and
+   write, an ioctl ABI of your own, a /dev node, a class and a device, and still nothing can find
+   it. An IIO device needs a channel specification and read\_raw, and the framework supplies the
+   sysfs path, a documented ABI, existing tools and buffered modes.}
+  {fig:framework_stack}
+
+\subsection{The cost of the shortcut}
+\label{c11:app:a2}
+
+Adding an \code{ioctl} is always the path of least resistance. It is worth knowing what it costs
+before taking it.
+
+\textbf{It is an ABI the moment a second program uses it.} The numbers and the structure layout are
+frozen; you may add but never change or remove. There is no deprecation period for something a
+customer's binary calls.
+
+\textbf{It is a portability trap.} A 32-bit process on a 64-bit kernel passes a differently laid-out
+structure, and handling that needs \code{compat_ioctl} and a structure with no implicit padding and
+no \code{long}. Getting this wrong is a standing source of kernel bugs, and it is invisible until
+somebody runs a 32-bit binary.
+
+\textbf{It is undiscoverable.} \code{ls /sys/bus/iio/devices} finds every IIO device on a machine.
+Nothing finds every device that implements your ioctl.
+
+\textbf{And there is usually already a subsystem for it.} The kernel has spent thirty years
+accumulating interfaces for classes of hardware, and ``a thing that produces samples'' or ``a thing
+with controllable pins'' are both very well-trodden.
+
+\subsection{The tour}
+\label{c11:app:a3}
+
+Ten subsystems worth recognising, with the question each answers.
+
+\begin{booktable}{@{}l>{\hsize=0.92\hsize}L>{\hsize=1.08\hsize}L@{}}
+  \thead{Subsystem} & \thead{For} & \thead{Userspace sees} \\
+  \midrule
+  \textbf{gpio} & Individually controllable pins & \code{/dev/gpiochipN}, libgpiod \\
+  \textbf{pinctrl} & What a pin is multiplexed \emph{as} & Nothing directly; other drivers \\
+  \textbf{clk} & Clock sources and gates & Nothing directly; \code{/sys/kernel/debug/clk} \\
+  \textbf{regulator} & Power supplies & Read-only \code{/sys/class/regulator} \\
+  \textbf{i2c}, \textbf{spi} & Devices on those buses & \code{/dev/i2c-N}, \code{/dev/spidevN.M} \\
+  \textbf{regmap} & Register access over any of those & Nothing; it is a driver-side helper \\
+  \textbf{iio} & Anything that samples or converts & \code{/sys/bus/iio/devices/}, \code{/dev/iio:deviceN} \\
+  \textbf{input} & Keys, buttons, touch, motion & \code{/dev/input/eventN} \\
+  \textbf{mtd} & Raw flash & \code{/dev/mtdN}, \code{/dev/mtdblockN} \\
+  \textbf{watchdog} & A timer that reboots the machine & \code{/dev/watchdog} \\
+\end{booktable}
+
+\noindent Four of them are worth more than a row.
+
+\textbf{pinctrl} is the one people are surprised to need. Before a pin can be a GPIO it has to be
+\emph{multiplexed} as one rather than as a UART line or an I2C signal, and that is a different piece
+of hardware in the SoC. Your driver should not be doing it: the pin configuration belongs in the
+device tree, and pinctrl applies it before your \code{probe} runs.
+
+\textbf{clk and regulator} exist because the answer to ``turn the device on'' is shared and
+refcounted. Two drivers on one clock is the normal case, and a driver that writes the gate register
+directly works until the second one disagrees with it. \code{devm_clk_get} and
+\code{clk_prepare_enable} cost two lines and are correct with any number of consumers.
+
+\textbf{regmap} is a driver-side helper rather than a userspace interface. Most drivers for an I2C
+or SPI chip contain the same fifty lines of read-modify-write, byte-order and caching; regmap
+replaces them with a \emph{description}, which registers exist, which are volatile, which are
+cacheable, and handles the rest. It is worth reaching for the moment a driver has more than a
+handful of registers.
+
+\textbf{iio} is where anything that measures belongs. Not just ADCs: accelerometers, light sensors,
+pressure, temperature, DACs, anything with a value and a unit. It carries scale, offset and units so
+that userspace can convert raw counts into volts without knowing anything about the chip.
+
+\textbf{Two of the ten you will drive yourself and eight you will only have read about}, which is
+worth knowing before the table starts to feel like competence: \S\ref{c11:app:a4} and
+\S\ref{c11:app:a5} register \code{qa-dev} with iio and gpio and the lab checks both, but
+\code{qa-dev} sits on no bus and has no clock or regulator to ask for, so nothing here can teach you
+what regmap feels like against a real I2C part.
+
+\subsection{Registering with IIO}
+\label{c11:app:a4}
+
+The whole of it, for a device with one channel:
+
+\begin{ccode}
+indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*priv));
+priv      = iio_priv(indio_dev);
+
+indio_dev->name          = "qa_dev";
+indio_dev->info          = &qa_iio_info;      /* .read_raw = qa_read_raw */
+indio_dev->modes         = INDIO_DIRECT_MODE;
+indio_dev->channels      = qa_channels;
+indio_dev->num_channels  = ARRAY_SIZE(qa_channels);
+
+ret = devm_iio_device_register(&pdev->dev, indio_dev);
+\end{ccode}
+
+\noindent \code{devm_iio_device_alloc} allocates the IIO device \emph{and} your private structure in
+one object; \code{iio_priv()} gets yours back out. That is the framework's idiom for per-device
+state and it replaces the \code{devm_kzalloc} from Chapter~\ref{c10:ch}.
+
+The channel says what the value \emph{is}:
+
+\begin{ccode}
+static const struct iio_chan_spec qa_channels[] = {
+        {
+                .type                = IIO_VOLTAGE,
+                .indexed             = 1,
+                .channel             = 0,
+                .info_mask_separate  = BIT(IIO_CHAN_INFO_RAW),
+        },
+};
+\end{ccode}
+
+\noindent and \code{.info_mask_separate} is the list of attributes to create.
+\code{IIO_CHAN_INFO_RAW} makes \code{in_voltage0_raw}; adding \code{IIO_CHAN_INFO_SCALE} would make
+\code{in_voltage0_scale}, and userspace multiplies the two to get millivolts, the unit the IIO ABI
+documents for a voltage.
+
+\code{read_raw} is the one callback:
+
+\begin{ccode}
+static int qa_read_raw(struct iio_dev *indio_dev, struct iio_chan_spec const *chan,
+                       int *val, int *val2, long mask)
+{
+        struct qa_priv *priv = iio_priv(indio_dev);
+
+        switch (mask) {
+        case IIO_CHAN_INFO_RAW:
+                *val = atomic_read(&priv->last_sample);
+                return IIO_VAL_INT;
+        default:
+                return -EINVAL;
+        }
+}
+\end{ccode}
+
+\noindent \textbf{What that buys}, on the target, immediately:
+
+\begin{console}
+# ls /sys/bus/iio/devices/
+iio:device0
+# cat /sys/bus/iio/devices/iio:device0/name
+qa_dev
+# cat /sys/bus/iio/devices/iio:device0/in_voltage0_raw
+195
+\end{console}
+
+\noindent No \file{/dev} node was written, no \code{read()} implemented, no \code{ioctl} invented.
+And because the device is in counter mode, reading the attribute twice measures the sample rate:
+
+\begin{console}
+195 ... one second ... 1076
+\end{console}
+
+\noindent 881 samples in a second, which is Chapter~\ref{c8:ch}'s interrupt rate arriving through an
+interface that knows nothing about interrupts.
+
+\subsection{Registering a gpiochip}
+\label{c11:app:a5}
+
+Five callbacks and a structure:
+
+\begin{ccode}
+priv->gc.label           = dev_name(&pdev->dev);
+priv->gc.parent          = &pdev->dev;
+priv->gc.owner           = THIS_MODULE;
+priv->gc.base            = -1;              /* let the core allocate the numbers */
+priv->gc.ngpio           = 8;
+priv->gc.get             = qa_gpio_get;
+priv->gc.set             = qa_gpio_set;
+priv->gc.direction_input = qa_gpio_direction_input;
+priv->gc.direction_output = qa_gpio_direction_output;
+priv->gc.get_direction   = qa_gpio_get_direction;
+
+ret = devm_gpiochip_add_data(&pdev->dev, &priv->gc, priv);
+\end{ccode}
+
+\noindent \code{.base = -1} matters: a hardcoded global GPIO number is a legacy practice. This
+kernel still accepts one, with a warning that static allocation is deprecated, but two chips whose
+hardcoded ranges overlap cannot both register. \code{gpiochip_get_data(gc)} retrieves the pointer
+you passed.
+
+Note that \code{.set} returns \code{void} in this kernel. It gained an \code{int} return later, so a
+driver copied from newer material will not compile here, and one copied from older material will not
+compile there. \S\ref{c3:app:a2}'s unstable internal API, again.
+
+What appears:
+
+\begin{console}
+# ls -l /sys/bus/gpio/devices/gpiochip1/of_node
+of_node -> .../firmware/devicetree/base/platform-bus@c000000/qa-dev@0
+# ls -l /dev/gpiochip1
+crw------- 1 root root 254, 1 /dev/gpiochip1
+\end{console}
+
+\noindent The chip is a child of your platform device, linked back to the device tree node it came
+from, with a character device the framework created and will remove when the driver unbinds.
+
+\textbf{There is no \file{/sys/class/gpio}.} That interface is deprecated and this course's kernel
+does not enable it; the character device replaced it, and a driver written against the sysfs
+interface is a driver written against something on its way out. \file{kernel/qa.config} says so in a
+comment.
+
+\subsection{What userspace can now do}
+\label{c11:app:a6}
+
+The tester shipped with the lab contains \textbf{nothing specific to this driver}. It finds the chip
+by the label the driver gave it and then speaks the standard ABI:
+
+\begin{ccode}
+ioctl(fd, GPIO_GET_CHIPINFO_IOCTL, &info);        /* what is this chip */
+ioctl(chip, GPIO_V2_GET_LINE_IOCTL, &req);        /* give me line 0 as an output */
+ioctl(line, GPIO_V2_LINE_SET_VALUES_IOCTL, &v);   /* drive it */
+\end{ccode}
+
+\begin{console}
+found /dev/gpiochip1: label "c000000.qa-dev", 8 lines
+  ok  line 0 can be driven high
+  ok  line 4 reads high, through the loopback
+\end{console}
+
+\noindent That is the argument, demonstrated: \textbf{a program written before your driver existed
+can drive your hardware}, because both sides implement an interface neither of them owns.
+\code{libgpiod} and its \code{gpioinfo}, \code{gpioget} and \code{gpioset} tools do exactly this and
+would work here unchanged.
+
+\subsection{Choosing a subsystem}
+\label{c11:app:a7}
+
+The question is \textbf{what the device is}, not what it does.
+
+\begin{booktable}{@{}>{\hsize=1.13\hsize}L>{\hsize=0.87\hsize}L@{}}
+  \thead{The device is} & \thead{Subsystem} \\
+  \midrule
+  Something that measures or converts a value & iio \\
+  Something with individually controlled pins & gpio \\
+  A source of human input & input \\
+  Raw flash & mtd \\
+  A timer that resets the board & watchdog \\
+  A clock source & clk \\
+  A power supply & regulator \\
+  On an I2C or SPI bus & i2c or spi, plus one of the above \\
+\end{booktable}
+
+\noindent A device is often several: a sensor on I2C that reports temperature is an \textbf{i2c}
+client and an \textbf{iio} device, and those are not competing answers.
+
+\textbf{When nothing fits}, a character device is a legitimate answer and not a failure. Write it
+with \code{misc_register} rather than the long way, document the interface, use
+\code{_IOR}/\code{_IOW} properly, and be honest that you now own an ABI. What is not legitimate is
+reaching for it because implementing an interface looked like more work than inventing one.
+
+\subsection{What a framework does not do}
+\label{c11:app:a8}
+
+Worth stating, because the argument above is one-sided by design.
+
+\textbf{It does not make your driver correct.} Everything from Chapters~\ref{c6:ch} to~\ref{c9:ch}
+still applies: the locking, the interrupt acknowledgement, the sleeping rules. A framework changes
+what your driver presents, not what it has to get right underneath.
+
+\textbf{It constrains you to its model.} If your device genuinely does not fit IIO's idea of a
+channel, forcing it in produces a driver that is harder to read than a character device would have
+been. The model is a good fit surprisingly often and is not a universal one.
+
+\textbf{It can be slower, and here is how much.} Going through a subsystem's generic path costs
+something against a purpose-built \code{read()}. Measured on this target, reading
+\code{in_voltage0_raw} repeatedly:
+
+\begin{narrowtable}{@{}lll@{}}
+  \thead{From} & \thead{Per read} & \thead{Rate} \\
+  \midrule
+  A C program & 571 us & 1,748 reads/s \\
+  A shell loop of \code{cat} & 29,700 us & 34 reads/s \\
+\end{narrowtable}
+
+\noindent The shell figure is fifty times worse because each \code{cat} is a fork and an exec, and
+it is worth knowing before you write a monitoring script: \textbf{a shell reading sysfs cannot keep
+up with a device sampling at more than about thirty hertz.}
+
+Even the C figure is only twice this device's 881 samples a second, so reading the attribute in a
+loop is already marginal at one kilohertz and hopeless above it. That is not a criticism of sysfs;
+it is what sysfs is for, which is configuration and occasional inspection. \textbf{IIO's buffered
+and triggered modes exist for exactly this}, delivering batches through \file{/dev/iio:deviceN}
+instead, and a driver that needs them says so by allocating a buffer rather than by abandoning the
+framework.
+
+\textbf{And it does not remove the ABI problem, it moves it to someone competent.} The GPIO
+character device is on its second version, \code{GPIO_V2_*}, because the first got some things
+wrong. The difference is that the migration was designed, documented and supported by the subsystem
+maintainers rather than by you.
+
+\lecturefigure[0.68]{lectures/L11/appendix/images/sysfs_cost.png}
+  {A logarithmic bar chart of reads per second: 1,748 from a C program at 571 microseconds each,
+   against 34 from a shell loop of cat at 29,700 microseconds each, with a dashed line marking the
+   881 samples a second the device produces.}
+  {fig:sysfs_cost}

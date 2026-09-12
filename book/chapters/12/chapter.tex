@@ -1,0 +1,51 @@
+% Chapter 12, typeset from lectures/L12: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{Real-Time Linux}
+\label{c12:ch}
+
+{\large\itshape What all of it costs in latency, and what a real-time kernel changes about the
+answer.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item What ``real time'' claims, and why it is a statement about the worst case and never the
+    average.
+  \item Three sources of latency, only one of which is the scheduler.
+  \item Priority inversion, and the spacecraft it kept resetting.
+  \item Four preemption models, and what each one is willing to interrupt.
+  \item What \code{PREEMPT_RT} actually changes: sleeping spinlocks, threaded interrupts,
+    inheritance.
+  \item Which locks do not change, and why \code{raw_spinlock_t} exists.
+  \item \code{cyclictest}: what it measures and what it structurally cannot see.
+  \item Measure your own driver's latency both ways, interrupt to handler and handler to
+    userspace, and plot it.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is about what everything the book has built costs in latency, and what a real-time
+kernel changes about the answer. It defines real time by the worst case rather than the average,
+names the three places latency comes from, and tells the Mars Pathfinder story as it happened. It
+sets out the four preemption models, what \code{PREEMPT_RT}, merged in the 6.12 kernel this course
+builds, does to spinlocks, interrupt handlers and mutexes, and which locks it leaves alone. It then
+turns to measurement: what \code{cyclictest} measures and what it cannot, how a device that
+timestamps its own interrupt lets latency be subtracted rather than inferred, and why a number taken
+under an emulator is worthless on its own while the comparison between two kernels survives.
+
+Read \secref{c12:app:a} first; it is the theory. \Secref{c12:app:b} is the measurement, and the lab
+is a measurement too: Exercise~\ref{c12:ex:6} specifies a driver that timestamps every interrupt
+twice and delivers the record declared in the header printed in \secref{c12:app:b3}, and the course
+ships the program that reads it. The second kernel is \code{make kernel RT=1}, a full build of its
+own, and it needs an initramfs of its own, \code{make rootfs RT=1}. The exercises in
+\secref{c12:sec:exercises} end with the Cross-check that closes the course: predict whether
+\code{PREEMPT_RT} lowers the mean and the maximum, measure both kernels idle and under load, and
+find that the two answers differ; then state at length what the measurement is blind to, which is
+the deliverable rather than the number. The lab is done when \code{make test L=L12} reports
+\textbf{PASSED} with ten checks on the \code{PREEMPT} kernel, and \code{RT=1 make test L=L12} does
+the same on the \code{PREEMPT_RT} one.
+
+\input{chapters/12/realtime}
+\input{chapters/12/measurement}
+\input{chapters/12/summary}
+\input{chapters/12/exercises}

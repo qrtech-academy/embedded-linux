@@ -1,0 +1,451 @@
+% Section 4.1, from lectures/L04/appendix/a_modules.md.
+
+\section{Kernel Modules, and the C You Are Allowed to Write}
+\label{c4:app:a}
+
+This section is the whole of the chapter's material: what a module is, how it is built and loaded,
+what the kernel does with the licence you declare, and what the C environment inside a kernel is
+actually like. It ends with the coding style question, which this repository answers differently
+from the kernel and owes you an explanation for.
+
+\subsection{A module is not a program}
+\label{c4:app:a1}
+
+The smallest useful module is six lines of substance:
+
+\begin{ccode}
+// SPDX-License-Identifier: GPL-2.0-only
+#include <linux/init.h>
+#include <linux/module.h>
+
+static int __init qa_hello_init(void)
+{
+    pr_info("qa_hello: loaded\n");
+    return 0;
+}
+
+static void __exit qa_hello_exit(void)
+{
+    pr_info("qa_hello: unloaded\n");
+}
+
+module_init(qa_hello_init);
+module_exit(qa_hello_exit);
+MODULE_LICENSE("GPL");
+\end{ccode}
+
+\noindent There is no \code{main}, and \code{qa_hello_init} is not one. The distinction is worth
+being precise about because it shapes everything you write afterwards.
+
+\code{main} runs, and while it runs, your program exists. When it returns, your program is over.
+\code{qa_hello_init} runs \textbf{once, at load}, and when it returns the module is \textbf{resident
+and idle}. Nothing of yours is running. The module is a body of code and data sitting in the
+kernel's address space, waiting to be called by something else: a file operation, an interrupt, a
+timer, a probe.
+
+So the shape of a module is \emph{registration}. \code{init} announces what you can do and then gets
+out of the way; everything after that is callbacks. A module whose \code{init} function contains a
+loop is almost always a module that should have started a thread, and a module whose \code{init}
+never returns has hung the process that called \code{insmod}.
+
+\textbf{\code{__init} and \code{__exit} are instructions to the linker.} Code marked \code{__init}
+is placed in a section that is freed once initialisation is done, which is why you see \code{Freeing
+unused kernel memory: 4672K} at the end of boot. \code{__exit} code can never run when the module is
+built into the kernel rather than as a module, because a built-in module can never be removed, so it
+is thrown away: at link time on most architectures, and on arm64 at the end of boot, with the
+\code{__init} code.
+
+\lecturefigure{lectures/L04/appendix/images/module_lifecycle.png}
+  {Five boxes in a row: insmod, init, resident, exit and rmmod. The middle box is highlighted and
+   annotated to say that nothing of yours runs there; the module is code and data occupying kernel
+   memory, waiting to be called by a system call, an interrupt, a timer or another module.}
+  {fig:module_lifecycle}
+
+\subsection{The four macros}
+\label{c4:app:a2}
+
+\begin{booktable}{@{}>{\hsize=0.43\hsize}Ll>{\hsize=1.57\hsize}L@{}}
+  \thead{Macro} & \thead{Required} & \thead{What it is for} \\
+  \midrule
+  \code{MODULE_LICENSE} & \textbf{Yes} & Read by the loader. See \secref{c4:app:a5}. Its absence is an error at build time \\
+  \code{MODULE_AUTHOR} & No & Convention, and useful when a bug report reaches a maintainer \\
+  \code{MODULE_DESCRIPTION} & No & Shown by \code{modinfo} \\
+  \code{MODULE_VERSION} & No & Free text; not used for dependency resolution \\
+\end{booktable}
+
+\noindent \code{MODULE_LICENSE} is the one that is not optional. Omit it and \code{modpost} fails
+the build with \code{missing MODULE_LICENSE()}, which is a good error, because the alternative is a
+module that loads as if it were proprietary: it taints the kernel and cannot see a single GPL-only
+symbol.
+
+All of them are readable without loading anything:
+
+\begin{console}
+$ modinfo qa_hello.ko
+filename:       qa_hello.ko
+license:        GPL
+depends:
+vermagic:       6.12.30 SMP preempt mod_unload modversions aarch64
+\end{console}
+
+\noindent That \code{vermagic} line is \secref{c4:app:a3}.
+
+\subsection{Building out of tree, and why a \code{.ko} is not portable}
+\label{c4:app:a3}
+
+An out-of-tree module is built by running the \emph{kernel's} build system on your directory:
+
+\begin{shell}
+make -C /path/to/kernel M=/path/to/your/module modules
+\end{shell}
+
+\noindent You are not compiling against kernel headers with your own build system. You are asking
+kbuild to compile your file with exactly the flags the kernel was compiled with, which is why the
+kernel tree has to be configured and built first, and why there is no shorter way.
+
+The consequence is \code{vermagic}. Every module records the kernel version, whether that kernel was
+SMP, which preemption model it used, and the architecture. The loader checks all of it and refuses a
+mismatch. This is a module built against this course's \file{build/kernel}, loaded into the
+real-time kernel Chapter~\ref{c12:ch} builds from the same source:
+
+\begin{console}
+qa_hello: version magic '6.12.30 SMP preempt mod_unload modversions aarch64' should be
+          '6.12.30 SMP preempt_rt mod_unload modversions aarch64'
+\end{console}
+
+\noindent This looks like pedantry and is not. The kernel has no stable internal ABI; a structure
+that gained a field between two point releases would be read at the wrong offsets by a module
+compiled against the old one, and the failure would be silent corruption rather than a refusal to
+load. \code{vermagic} turns that into an error message.
+
+With \code{CONFIG_MODVERSIONS}, which this course enables, the check is finer: a checksum is
+computed per exported symbol from its argument types, a module is refused if any symbol it uses has
+changed shape, and the release number at the front of \code{vermagic} is no longer compared at all.
+That is what lets a distribution ship third-party modules across a stable series.
+
+\textbf{This course's Kbuild files build every \code{.c} in the lab directory as its own module:}
+
+\begin{makecode}
+obj-m += $(patsubst $(src)/%.c,%.o,$(filter-out %.mod.c,$(wildcard $(src)/*.c)))
+\end{makecode}
+
+\noindent That is unusual for real kernel code, where the object list is written out explicitly. It
+is done here because the repository ships the build file and you write the sources, so a fixed list
+would mean editing the build every time you start an exercise. Note \code{$(src)} rather than a bare
+wildcard: kbuild runs the file from the kernel's output directory, and a wildcard over the current
+directory silently matches nothing, producing a build that succeeds having compiled zero modules.
+The \code{filter-out} is the other half: kbuild generates a \file{foo.mod.c} beside every
+\file{foo.c} it builds, and without it the second build tries to make a module of that as well.
+
+\subsection{Four commands, and the two people confuse}
+\label{c4:app:a4}
+
+\begin{booktable}{@{}llL@{}}
+  \thead{Command} & \thead{Takes} & \thead{Does} \\
+  \midrule
+  \code{insmod} & A path & Loads exactly that file. Resolves nothing \\
+  \code{modprobe} & A name & Looks the name up in \code{modules.dep}, loads dependencies first, then it \\
+  \code{depmod} & Nothing & Scans \code{/lib/modules/$(uname -r)} and writes \code{modules.dep} \\
+  \code{rmmod} & A name & Unloads, if nothing holds a reference \\
+\end{booktable}
+
+\noindent The demonstration that makes the difference concrete is to load a module with a dependency
+the wrong way:
+
+\begin{console}
+# insmod ./qa_user.ko
+qa_user: Unknown symbol qa_answer (err -2)
+insmod: can't insert './qa_user.ko': unknown symbol in module or invalid parameter
+\end{console}
+
+\noindent \code{insmod} did what it was told. It loaded that file, found an unresolved symbol, and
+gave up. It never occurred to it to look for a module providing \code{qa_answer}, because looking
+things up is \code{modprobe}'s job and \code{modprobe} reads a file that \code{depmod} generated.
+
+\textbf{Unloading is refcounted.} While \code{qa_user} is loaded, \code{qa_export} cannot be
+removed:
+
+\begin{console}
+# rmmod qa_export
+rmmod: remove 'qa_export': Resource temporarily unavailable
+# cat /sys/module/qa_export/refcnt
+1
+# ls /sys/module/qa_export/holders/
+qa_user
+\end{console}
+
+\noindent The \code{holders} directory is the useful one: it names who is holding you, rather than
+merely how many. Note also that \textbf{BusyBox's \code{rmmod} returns success even when the removal
+failed}, which is why the lab for this chapter checks whether the module is still loaded rather
+than checking an exit status. A test that trusts that exit status gets the same answer on a kernel
+that refused and on a kernel that did not.
+
+\subsection{The licence, and where the check happens}
+\label{c4:app:a5}
+
+\Secref{c1:app:b4} made the argument. This is the mechanism.
+
+Symbols leave a module in one of two ways:
+
+\begin{ccode}
+EXPORT_SYMBOL(qa_answer);       /* any module */
+EXPORT_SYMBOL_GPL(qa_answer);   /* GPL-compatible modules only */
+\end{ccode}
+
+\noindent The accepted values of \code{MODULE_LICENSE} are a fixed list: \code{"GPL"}, \code{"GPL
+v2"}, \code{"GPL and additional rights"}, \code{"Dual BSD/GPL"}, \code{"Dual MIT/GPL"}, \code{"Dual
+MPL/GPL"}, and \code{"Proprietary"}. Anything else is treated as proprietary, including a typo.
+
+Now the part worth doing rather than reading. Take a module that calls a \code{_GPL} symbol, declare
+its licence \code{"Proprietary"}, and build it. \textbf{The build fails}, and the message is
+unusually good:
+
+\begin{console}
+ERROR: modpost: GPL-incompatible module qa_proprietary.ko uses GPL-only symbol 'qa_answer'
+\end{console}
+
+\noindent That is \code{modpost}, a build step that runs after every module is linked and before the
+\code{.ko} is finished. It reads the exports of everything it can see, and the check is three lines
+in \file{scripts/mod/modpost.c}:
+
+\begin{ccode}
+if (!mod->is_gpl_compatible && exp->is_gpl_only)
+        error("GPL-incompatible module %s.ko uses GPL-only symbol '%s'\n",
+              basename, exp->name);
+\end{ccode}
+
+\noindent \textbf{The licence is enforced twice, at two different stages, and it is worth knowing
+both} because they fail differently.
+
+\textbf{At build time}, as above, when \code{modpost} can see that the symbol is GPL-only. That is
+the usual case: the exports of the built-in kernel come from its \code{Module.symvers}, and modules
+built together see each other. You get a clear message naming the licence, the module and the
+symbol, and no \code{.ko} is produced at all.
+
+\textbf{At load time}, as a backstop, and here the failure is much less obvious. The module loader
+does not check the licence of a symbol you asked for and refuse it; instead it \textbf{hides
+GPL-only symbols from the search entirely}. From \file{kernel/module/main.c}:
+
+\begin{ccode}
+static bool find_exported_symbol_in_section(...)
+{
+        if (!fsa->gplok && syms->license == GPL_ONLY)
+                return false;
+\end{ccode}
+
+\noindent where \code{gplok} is set from the loading module's own taint:
+
+\begin{ccode}
+.gplok = !(mod->taints & (1 << TAINT_PROPRIETARY_MODULE)),
+\end{ccode}
+
+\noindent So a proprietary module looking up a GPL-only symbol is told the symbol \textbf{does not
+exist}, and \code{insmod} reports:
+
+\begin{console}
+qa_user: Unknown symbol qa_answer (err -2)
+\end{console}
+
+\noindent \textbf{Nothing in that message mentions a licence.} It is the same message you get for a
+genuine typo or a missing dependency, which makes it one of the more confusing failures in kernel
+work. The load-time path is the one you hit when \code{modpost} could not have known: a module built
+with \code{KBUILD_MODPOST_WARN=1}, which turns an unresolved symbol from an error into a warning, or
+a module built against a kernel where the symbol was \code{EXPORT_SYMBOL} and loaded into one where
+it has since become \code{EXPORT_SYMBOL_GPL}. That second case is real and happens on kernel
+upgrades.
+
+\textbf{Tainting is separate and additive.} Loading any out-of-tree module taints the kernel, even a
+GPL one:
+
+\begin{console}
+qa_hello: loading out-of-tree module taints kernel.
+\end{console}
+
+\noindent \file{/proc/sys/kernel/tainted} is a bitmask;
+\file{Documentation/admin-guide/tainted-kernels.rst} decodes it. Loading an out-of-tree module sets
+bit 12 (\code{TAINT_OOT_MODULE}, value 4096); loading a proprietary one \emph{also} sets bit 0
+(\code{TAINT_PROPRIETARY_MODULE}), so a proprietary out-of-tree module leaves
+\file{/proc/sys/kernel/tainted} reading \textbf{4097} and shows as \code{(PO)} in
+\file{/proc/modules}.
+
+What a taint means is mostly social: an oops from a tainted kernel is one that upstream maintainers
+will decline to debug, because they cannot see the code that might have caused it.
+
+\textbf{One taint has a concrete technical consequence, and it is worth knowing before
+Chapter~\ref{c7:ch}.} Loading a proprietary module prints this as well:
+
+\begin{console}
+qa_prop_ok: module license 'Proprietary' taints kernel.
+Disabling lock debugging due to kernel taint
+\end{console}
+
+\noindent The lock validator is switched off, for the rest of that boot, because it cannot reason
+about locking in code it cannot see. Chapter~\ref{c7:ch} is built entirely on that validator. So a
+single proprietary module loaded anywhere on the system silently removes the tool you would use to
+find the deadlock it might be causing, and the rule that follows is to keep development kernels free
+of proprietary modules even when the production system has one.
+
+\subsection{Parameters, and sysfs you did not write}
+\label{c4:app:a6}
+
+One line:
+
+\begin{ccode}
+static char *who = "world";
+module_param(who, charp, 0444);
+MODULE_PARM_DESC(who, "who to greet");
+\end{ccode}
+
+\noindent buys a load-time argument and a sysfs file:
+
+\begin{console}
+# insmod ./qa_hello.ko who=embedded
+# cat /sys/module/qa_hello/parameters/who
+embedded
+\end{console}
+
+\noindent Nobody wrote code to create that file. The third argument is its mode, and \code{0} means
+do not create one at all. If the mode is writable, userspace can change the variable while the
+module is loaded, which is worth pausing on: that is a shared variable being written by another
+context, and everything Chapter~\ref{c7:ch} says about concurrency applies to it.
+
+This is the first appearance of the pattern the whole driver model rests on, which is that you
+describe something and the kernel generates the interface. Chapter~\ref{c10:ch} is where it stops
+looking like a convenience and starts looking like the architecture.
+
+\subsection{Printing}
+\label{c4:app:a7}
+
+\code{printk} with a level, or the wrappers, which is what you should actually use:
+
+\begin{booktable}{@{}lrL@{}}
+  \thead{Wrapper} & \thead{Level} & \thead{Use for} \\
+  \midrule
+  \code{pr_emerg} & 0 & The system is unusable \\
+  \code{pr_alert} & 1 & Action must be taken immediately \\
+  \code{pr_crit} & 2 & Critical conditions \\
+  \code{pr_err} & 3 & An error your driver could not handle \\
+  \code{pr_warn} & 4 & Something unexpected that you did handle \\
+  \code{pr_notice} & 5 & Normal but significant \\
+  \code{pr_info} & 6 & Normal. Most of what you write during development \\
+  \code{pr_debug} & 7 & Compiled out unless dynamic debug is on \\
+\end{booktable}
+
+\noindent Three practical notes.
+
+\textbf{Set \code{pr_fmt} once, at the top of the file}, and every message gets a prefix for free:
+
+\begin{ccode}
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+\end{ccode}
+
+\noindent \textbf{\code{pr_debug} is not \code{pr_info} you comment out.} With
+\code{CONFIG_DYNAMIC_DEBUG}, which this course enables, each call site can be switched on at run
+time:
+
+\begin{shell}
+echo 'module qa_hello +p' > /sys/kernel/debug/dynamic_debug/control
+\end{shell}
+
+\noindent Until then it costs nothing but a few bytes of metadata. That is what makes it reasonable
+to leave debug printing in shipped code.
+
+\textbf{Prefer \code{dev_info} once you have a \code{struct device}}, from Chapter~\ref{c10:ch}
+onwards. It prints which device the message came from, which matters the moment there are two of
+them.
+
+\subsection{The C you are allowed to write}
+\label{c4:app:a8}
+
+The kernel is compiled \code{-nostdinc}, \code{-ffreestanding}, against its own headers. There is no
+C library. The practical list:
+\begin{itemize}
+  \item \textbf{No \file{stdio.h}, \file{stdlib.h}, \file{string.h}.} There are kernel equivalents
+    with the same names for some things (\code{memcpy}, \code{strlen}, \code{snprintf}) and no
+    equivalent for others.
+  \item \textbf{No \code{malloc}.} \code{kmalloc} and friends, which take a flag saying what context
+    you are in. Chapter~\ref{c6:ch}.
+  \item \textbf{No floating point.} The kernel does not save FPU state on entry, so using a
+    \code{double} corrupts whatever userspace task was interrupted. On arm64 the compiler is not
+    allowed to try: the kernel is built with \code{-mgeneral-regs-only}, so a \code{double} is a
+    compile error. If you genuinely need it there is \code{kernel_fpu_begin()}, and needing it is
+    nearly always a sign the calculation belongs in userspace. Fixed point is the normal answer.
+  \item \textbf{A small, fixed stack.} 16 KB on arm64, for the whole call chain, and nothing grows
+    it; interrupts run on a separate per-CPU stack of the same size. This kernel puts an unmapped
+    guard page below each stack (\code{CONFIG_VMAP_STACK}, on by default), so running off the end is
+    a \code{kernel stack overflow} panic rather than a diagnostic you can recover from. Without the
+    guard page, a large local array silently corrupts whatever lies below the stack, and the crash
+    comes somewhere else entirely. \code{-Wframe-larger-than=2048} warns about the obvious cases at
+    compile time.
+  \item \textbf{No exceptions and no unwinding.} Every function returns an error code, and the
+    caller checks it. The convention is zero for success and a negative \code{-Exxx} for failure,
+    and pointer-returning functions use \code{ERR_PTR}, \code{IS_ERR} and \code{PTR_ERR} to pack an
+    error into a pointer.
+  \item \textbf{Never trust a userspace pointer.} Chapter~\ref{c5:ch}.
+\end{itemize}
+The unifying idea is that a mistake in kernel C does not produce a segfault in your program, because
+there is no ``your program''. It produces an oops, and often it produces one somewhere else, later,
+in code you did not write.
+
+\subsection{Coding style, and why this repository does not use the kernel's}
+\label{c4:app:a9}
+
+The Linux kernel has a documented coding style, in \file{Documentation/process/coding-style.rst},
+and it is not a matter of taste: patches are rejected for violating it, and
+\file{scripts/checkpatch.pl} exists to check.
+
+It is tabs, eight columns wide, with braces in K\&R placement:
+
+\begin{ccode}
+static int qa_fifo_put(struct qa_fifo *fifo, const u8 *data, size_t len)
+{
+	size_t n = 0;
+
+	if (!fifo || !data)
+		return 0;
+
+	while (n < len && fifo->level < fifo->capacity) {
+		fifo->data[(fifo->head + fifo->level) % fifo->capacity] = data[n++];
+		fifo->level++;
+	}
+
+	return n;
+}
+\end{ccode}
+
+\noindent \textbf{This repository is formatted differently}, with four spaces and braces on their
+own line:
+
+\begin{ccode}
+static int qa_fifo_put(struct qa_fifo* fifo, const u8* data, size_t len)
+{
+    size_t n = 0;
+
+    if (!fifo || !data) { return 0; }
+
+    while (n < len && fifo->level < fifo->capacity)
+    {
+        fifo->data[(fifo->head + fifo->level) % fifo->capacity] = data[n++];
+        fifo->level++;
+    }
+
+    return n;
+}
+\end{ccode}
+
+\noindent That is the QAcademy house style, shared with every other course in the series and
+enforced by \file{.clang-format}. The trade is deliberate and it is worth being honest about both
+halves of it.
+
+\textbf{What it buys} is that a reader moving between the Rust, C++ and Linux courses sees one
+style, and that \code{make format} does the same thing everywhere.
+
+\textbf{What it costs} is that none of the code in this repository would be accepted upstream, and
+that a reader who goes from here to \file{drivers/} will find every file looks different. That
+second cost is real, which is why this section exists, and why the two versions above are printed
+side by side. The difference is entirely mechanical: eight-column tabs against four spaces, brace
+placement, and \code{char *p} against \code{char* p}.
+
+If you write a driver you intend to submit, run \code{scripts/checkpatch.pl --file} on it and follow
+what it says. Nothing in this course's material depends on the formatting, and everything in it
+would be correct in either style.

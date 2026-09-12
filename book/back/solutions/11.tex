@@ -1,0 +1,317 @@
+% Solutions to the Chapter 11 exercises that are not code, from lectures/L11/appendix/b_exercises.md.
+% Exercises 11.6 and 11.7 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 11: Kernel Frameworks}
+\label{sol:sec:c11}
+Answers to the exercises in \secref{c11:sec:exercises}. Exercises~\ref{c11:ex:6} and~\ref{c11:ex:7}
+are Code, and are checked on the target: the first as its Check yourself line says, the second with
+the same tools that \file{run.sh} uses.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c11:ex:1}{What a framework gives you}{Recall}
+
+\xpart{a} The five of \secref{c11:app:a1}: no way for a program that does not already know about it
+to find it; no documented interface, only the one in your head and in the source; no existing
+tools, so every user writes their own reader; no power management, so suspend and resume do
+nothing; and no way to say what the device \emph{is}, only what it does. IIO would also have given
+it a scale and units, and a buffered stream to userspace (\secref{c11:app:a8}).
+
+\xpart{b} You implement an interface somebody else designed, and in exchange you stop having to
+design, document, version and support one of your own, and every tool that already speaks it works
+with your device.
+
+\xpart{c} First, it is an ABI as soon as a second program uses it: its numbers and structure
+layouts are frozen, and you may add to them but never change or remove anything. Second, it is a
+portability trap: a 32-bit process on a 64-bit kernel lays the argument structure out differently,
+so the \code{ioctl} needs a \code{compat_ioctl} handler, or a structure with fixed-width types and no
+implicit padding. Third, it is undiscoverable: nothing lists the devices that implement it, and no
+tool speaks it. The second is the one that appears only on a particular kind of system: a 64-bit
+kernel running 32-bit userspace, which is common in embedded work, an arm64 kernel under an older
+32-bit Arm root filesystem for instance. It is invisible until somebody runs a 32-bit binary.
+
+\xpart{d} There is none, which is the point. Nothing records which drivers implement which
+\code{ioctl} numbers: a number means something only to the driver that defined it, and the only way
+to find the devices is to know their names already. Trying a device with an \code{ioctl} it does
+not implement fails with \code{ENOTTY} at best, and does something else entirely if its driver
+happened to pick the same number.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c11:ex:2}{The tour}{Recall}
+
+\xpart{a} \textbf{i2c} and \textbf{iio}: an I2C client, because that is how it is attached, and an
+IIO device, because it measures. A temperature sensor that watches the health of the board itself
+is often a \code{hwmon} device instead, a subsystem the tour in \secref{c11:app:a3} leaves out.
+
+\xpart{b} \textbf{gpio}. On a real board the LED is usually handed on to the \code{leds} subsystem
+through the \code{gpio-leds} driver, which consumes the line; the pin is still a GPIO.
+
+\xpart{c} \textbf{watchdog}.
+
+\xpart{d} \textbf{input}: it is a source of human input. Its driver usually reads the encoder's two
+lines through gpio, but what the device is, is input.
+
+\xpart{e} \textbf{mtd}: raw flash, with no controller in front of it doing wear levelling or
+bad-block handling.
+
+\xpart{f} \textbf{spi} and \textbf{iio}.
+
+\xpart{g} \textbf{clk}: a clock source, described once in the device tree and shared by its three
+consumers, whose enables the clock framework counts.
+
+\xpart{h} a) and f), each an \textbf{i2c} or \textbf{spi} device and an \textbf{iio} device. That
+is not a contradiction, because the two answer different questions, the same two that
+\file{/sys/bus} and \file{/sys/class} answer (\secref{c10:app:a2}): the bus is how the device is
+attached and how a driver is matched to it, and the class is what the device is to userspace. One
+driver does both. It registers with the bus as an I2C or SPI driver, and its \code{probe} registers
+an IIO device.
+
+\xpart{i} \textbf{regmap}. It is a driver-side library rather than an interface: it gives a driver
+register access over I2C, SPI, MMIO and other buses from a description, the register width and
+which registers are readable, writable, volatile or cacheable, and does the transfers, the byte
+order, the read-modify-write and the caching itself. The only view of it from outside is in
+debugfs, which is not an interface.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c11:ex:3}{Reading an IIO device}{Hand calculation}
+
+\xpart{a} With no offset the value is the raw count times the scale:
+$2048 \times 0.805664 = 1649.999872$, so \textbf{1650.0\,mV}, or 1.650\,V. The units of the scale
+are millivolts per count. The IIO ABI says so: the documentation of \code{in_voltageY_raw} states
+that its units after the scale and offset are applied are millivolts
+(\file{Documentation/ABI/testing/sysfs-bus-iio}:141--153), so the scale is whatever turns one count
+into millivolts. The number gives the device away, too: $3300 / 4096 = 0.8056640625$, a 12-bit
+converter with a 3.3\,V reference, and 2048 is half of full scale.
+
+\xpart{b} The kernel does not use floating point, so a driver cannot cheaply produce a fractional
+voltage, while the raw count is exactly what the hardware delivers and the scale can be stated
+exactly, as a fraction if need be. In buffered mode the samples go to userspace as the hardware
+produced them, at full rate, with no conversion per sample in the kernel, and userspace applies
+one scale to all of them. And the scale belongs to the channel's configuration, which can change
+with its gain or range, so it is published once rather than folded into every value.
+
+\xpart{c} The offset is added to the raw value before scaling
+(\file{Documentation/ABI/testing/sysfs-bus-iio}:455--457):
+$(2048 + (-100)) \times 0.805664 = 1948 \times 0.805664 = 1569.433472$, so \textbf{1569.4\,mV},
+about 1.569\,V. The order is raw, plus offset, times scale.
+
+\xpart{d} Only \code{raw}. A counter has no unit to convert to, so a \code{scale} would claim one and
+an \code{offset} would claim a zero point; without them userspace takes the value as a plain count.
+\code{type} should say what the value is, and \code{IIO_VOLTAGE} tells every tool that reads it that
+it is a voltage, which is false. IIO does have \code{IIO_COUNT}, which makes \code{in_count0_raw}
+(\file{include/uapi/linux/iio/types.h}:44), but the ABI marks that attribute as deprecated in favour
+of the counter subsystem (\file{Documentation/ABI/testing/sysfs-bus-iio}:2005--2009), so a device
+that really is a counter belongs there, not in IIO. The lab uses \code{IIO_VOLTAGE} because
+\code{qa-dev} stands in for a converter, and its counter mode is a test pattern rather than what the
+device is.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c11:ex:4}{The pin that is not yet a GPIO}{Design}
+
+\xpart{a} \textbf{pinctrl}, and the configuration is written in the device tree. The pin
+controller's node holds groups naming the pins and the function each is to have, with their pull
+and drive settings, and the node of the device that uses them selects one by phandle:
+
+\begin{console}
+pinctrl-names = "default";
+pinctrl-0 = <&uart0_pins>;
+\end{console}
+
+\xpart{b} No. The driver core has the pin controller apply the device's \code{default} state before
+\code{probe} is called (\code{pinctrl_bind_pins} in \code{really_probe},
+\file{drivers/base/dd.c}:635), so by the time your code runs the pins are already set. Which
+function a pin has depends on the board, the same pin of the same SoC being a UART line on one
+board and a GPIO on the next, so it belongs in that board's tree. And the multiplexing registers
+belong to the pin controller, shared by every device on the SoC: a driver that writes them
+hardcodes one SoC's register layout and one board's wiring, and races every other user of the same
+register.
+
+\xpart{c} \code{devm_clk_get(&pdev->dev, NULL)} to get the clock, checked with \code{IS_ERR}, and
+\code{clk_prepare_enable(clk)} to turn it on, checked for a negative return;
+\file{include/linux/clk.h} also has \code{devm_clk_get_enabled}, which does both and turns the clock
+off again at unbind. Writing the gate register directly instead goes wrong because the clock
+framework counts enables, turns a clock off when the count reaches zero, and does not know about
+you. When the other driver disables the clock, in its suspend or its \code{remove}, the count
+reaches zero and the framework gates it, and your device stops responding underneath you. The
+other way round, if your \code{remove} writes the gate off, the other driver's device dies. Even
+with no second driver, the framework switches off every clock nobody has claimed at the end of boot
+(\code{clk_disable_unused}, \file{drivers/clk/clk.c}:1531--1570), yours included; and it enables a
+clock's parents before the clock, which a write to one gate does not.
+
+\xpart{d} Get it with \code{devm_regulator_get} and turn it on with \code{regulator_enable}. The
+framework counts its consumers and switches the supply off only when the last one lets go; it
+enables the supply's own parent supplies first; it holds every consumer to the voltage limits and
+permissions the board declares in its device tree; it waits for the supply to settle before
+returning; and once boot has finished it switches off every regulator no consumer has claimed
+(\code{regulator_late_cleanup}, \file{drivers/regulator/core.c}:6336--6361), which would include
+yours if you had only written the register. The write itself would also mean talking to the power
+management chip over its bus, which belongs to that chip's driver.
+
+\xpart{e} \code{-EPROBE_DEFER}. The lookups return it themselves when the provider has not
+registered yet: \code{devm_clk_get}, \code{devm_regulator_get}, and the pin controller lookup,
+which the core does before \code{probe} even runs. \code{probe} passes it on, ideally through
+\code{dev_err_probe}, which records why. The core puts the device on its list of deferred devices
+and tries it again whenever another driver binds successfully (\file{drivers/base/dd.c}:36--50), so
+it probes once its providers have; anything still waiting at the end of boot is listed in
+\file{/sys/kernel/debug/devices_deferred}.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c11:ex:5}{When a character device is right}{Design}
+
+\xpart{a} A block in an FPGA on a company's own board that runs a protocol of the product's own:
+say, a controller that takes a list of timed commands for a production machine's actuators and
+reports as each one completes. It fits no subsystem because it is not a member of any class of
+hardware that other vendors make. It does not measure a value, it is not a set of pins, a network
+interface or a store, and its operations are defined by the product, so no subsystem's model has a
+place for them. An answer that names a subsystem instead has to argue that the device's operations
+are that subsystem's: if the block turned out to be a set of PWM outputs, it would belong in
+\code{pwm}.
+
+\xpart{b} \code{misc_register}. One device needs one node, and the misc device gives it one: a
+dynamic minor under major 10 (\file{include/linux/miscdevice.h}:74,
+\file{include/uapi/linux/major.h}:26), with the class device and so the node created for it, in one
+call undone by one call. Chapter~\ref{c5:ch}'s long way, a number, a \code{cdev}, a class and a
+device, each with its unwind, is for a driver that needs a range of minors or a major of its own,
+such as many nodes for one device.
+
+\xpart{c} A specification of each: its number, built with \code{_IOR}, \code{_IOW} or \code{_IOWR}
+with the right direction and size; the argument's layout and what every field means; which errors
+it returns and when; and the header, in the kernel's userspace API form. A layout that is the same
+for a 32-bit and a 64-bit caller, with fixed-width types, explicit padding and any pointer carried
+as a \code{__u64}, or else a \code{compat_ioctl} that translates. Room to grow, a flags field that
+must be zero today or a size field, so that the next change does not need a new number. And the
+promise never to change or remove any of it. For how long: for as long as any program that uses it
+exists, which in practice means forever, because there is no deprecation period for a customer's
+binary (\secref{c11:app:a2}).
+
+\xpart{d} \textbf{The \code{long}} is 4 bytes in a 32-bit process and 8 in a 64-bit kernel, so the
+structure has a different size and layout for the two; and because \code{_IOR} encodes the size in
+the command number, a 32-bit caller's number does not even match the 64-bit kernel's. It needs a
+\code{compat_ioctl} that knows both layouts. \textbf{The pointer} has the same size problem, and a
+worse one: a pointer means nothing on the other side of the boundary. A kernel pointer handed to
+userspace leaks a kernel address, which defeats address-space randomisation, and is of no use to
+the program; a userspace pointer has to be carried as a \code{__u64} and turned back with
+\code{u64_to_user_ptr} (\file{include/linux/kernel.h}:50). The fix for both is fixed-width types.
+
+\xpart{e} ``No subsystem fits'' is a statement about the device, and it is a reason: there is no
+existing interface, so you write one and accept that you own it. ``Implementing a subsystem
+interface looked like more work'' is a statement about the author's afternoon, and it is an excuse:
+the interface is a cost paid once, by you, and the invented ABI a cost paid for as long as the
+device is in use, by you and by everyone who has to write a tool for it.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c11:ex:8}{What you gave up}{Design}
+
+\xpart{a} No. A read of \code{in_voltage0_raw} returns at once with the most recent sample, whether
+or not a new one has arrived since the last read; nothing makes it wait, and \code{poll} on the
+attribute is not woken by new samples, because the driver never tells sysfs about them. What has
+been lost is waiting for data without spinning, and with it every sample but the latest: whatever
+arrives between two reads is gone, and so are the order and the timing of the samples.
+
+\xpart{b} IIO's buffers, described in \file{Documentation/driver-api/iio/buffers.rst} and
+\file{triggered-buffers.rst}: the driver pushes each sample into a buffer in the kernel as it
+arrives, and userspace enables the channels it wants and reads whole batches of samples from
+\file{/dev/iio:deviceN}, blocking or polling until they are there. A driver must add a
+\code{scan_index} and a \code{scan_type} to its channel and set up a buffer, which for a device
+that raises its own interrupt per sample, as \code{qa-dev} does, is \code{devm_iio_kfifo_buffer_setup}
+with the handler calling \code{iio_push_to_buffers} (a device that has to be told when to sample
+uses \code{devm_iio_triggered_buffer_setup} and a trigger instead), and it needs
+\code{CONFIG_IIO_BUFFER} and \code{CONFIG_IIO_KFIFO_BUF}, which \file{kernel/qa.config} already
+enables.
+
+\xpart{c} Anything that is not a channel value. The interrupt timestamp in \code{TS_LO} and
+\code{TS_HI}, which Chapter~\ref{c12:ch} is built on, or the overrun flag in \code{STATUS}: with a
+character device of your own you added a field to what \code{read} returned, or an \code{ioctl}. In
+IIO you have to find the framework's place for it, a timestamp channel or an event, or add an
+attribute of your own, which is new ABI again. A smaller one on this target: the module now depends
+on \code{industrialio}, which has to be loaded first, as \file{run.sh} does with \code{modprobe}.
+
+\xpart{d} A device that exchanges messages rather than producing values: an FPGA block that takes a
+job description and returns a result of varying length, for instance. IIO's model is a set of
+channels, each a value of fixed size, sampled together into scans of fixed size. Commands, replies
+and records of varying length have no channel to be, so the driver would invent channels, spread
+each message across them and leave userspace to put it back together, where a misc device that
+reads and writes whole messages says what it does.
+
+\xpart{e} That the claim is false. The GPIO character device needed a second version because the
+first got things wrong, and the first is still built and supported on this kernel, marked
+deprecated (\code{CONFIG_GPIO_CDEV_V1=y}; \file{drivers/gpio/Kconfig}:86--94), because programs use
+it. Accurately: \textbf{a framework does not remove the ABI problem, it moves it to the subsystem's
+maintainers}, who design, document and support the interface and its migrations once for every
+driver in it, instead of every driver author doing it alone (\secref{c11:app:a8}).
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c11:ex:9}{A sample rate measured through an interface that knows nothing about it}{Cross-check}
+
+\xpart{a} A \code{PERIOD_NS} of 1\,000\,000 is 1\,ms, so 1,000 samples a second, the first of them
+one period after the device is enabled (\code{qa_dev_arm_timer}, \file{tools/qa-dev/qa-dev.c}:154).
+In counter mode sample $n$ has the value $n$ and the count starts at zero (\file{qa-dev.c}:139--145),
+so the thousandth sample has the value 999:
+\begin{itemize}
+  \item one second after the driver loads and enables the device, \code{in_voltage0_raw} reads
+    \textbf{999}, or 998 if you read just before the thousandth sample is due;
+  \item two reads a second apart differ by \textbf{1000};
+  \item at \code{period_ns=500000}, 2,000 samples a second: \textbf{1999} and \textbf{2000}.
+\end{itemize}
+The first prediction assumes the count is at zero when the driver loads: after a boot in which the
+device has not run, or with a driver that writes \code{CTRL_RESET}, which clears it
+(\file{qa-dev.c}:268--272). Disabling the device stops its timer but keeps the count, so on a second
+load in the same boot the value carries on from where it stopped, and only the difference can be
+predicted.
+
+\xpart{c} Reconcile:
+\begin{itemize}
+  \item About 880: \secref{c11:app:a4} measured 881, from 195 to 1076 in a second, 11.9 per cent
+    short of 1,000. You have seen it in Chapter~\ref{c8:ch}'s Cross-check,
+    Exercise~\ref{c8:ex:9}, as an interrupt count short of the period's prediction by a similar
+    margin: 1,731 in about 2.1\,s at 1\,ms, which is about 824 a second. The effect is the device's
+    timer. \code{qa-dev} arms the next sample one period after the moment its timer callback runs,
+    not on an absolute schedule (\file{qa-dev.c}:154), so every interval is the period plus however
+    late QEMU ran the callback. Exercise~\ref{c8:ex:9} also showed that this relative re-arm is
+    part of the explanation and not all of it, because the lateness it implies is not constant.
+  \item The same shortfall. The value is generated inside the device: the count goes up for every
+    sample the device takes, even one it then drops because its FIFO is full (\file{qa-dev.c}:145
+    and 173). So the difference between two values counts the samples the device produced, and
+    nothing the driver or IIO does can add one or lose one; IIO decides only when you look. To tell,
+    count something else over the same interval and compare: the change in \code{qa-dev}'s line of
+    \file{/proc/interrupts}, which at 1\,ms is one interrupt per sample (Exercise~\ref{c8:ex:9}),
+    should equal the change in the value. The one thing the reading path does change is the
+    interval. From a shell, the time between two reads is the \code{sleep} plus the cost of
+    starting the programs in between, which \secref{c11:app:a8} puts at tens of milliseconds a
+    command. That makes a shell's figure a few per cent too high, never too low, so it cannot be the
+    shortfall.
+  \item Counter mode made it possible: each value is the device's own sample number, so the value
+    is a running total, and you supplied the time yourself by reading a second apart. In
+    \code{QA_DEV_MODE_NOISE} the values are a pseudo-random 12-bit sequence
+    (\file{qa-dev.c}:133--136), and a difference means nothing. You would have had to count samples
+    some other way: the interrupt count in \file{/proc/interrupts}, a count the driver publishes as
+    Chapter~\ref{c10:ch}'s \code{samples} attribute did, or IIO's buffered mode with timestamps. Or
+    put the device in sawtooth mode, where the value is $n$ modulo 4096 and a difference taken
+    modulo 4096 still counts samples, as long as fewer than 4,096 arrive between two reads; 881 do.
+\end{itemize}
+
+\xpart{d} Measured on the course's target (\secref{c11:app:a8}): 571 microseconds a read from a C
+program, 1,748 reads a second, against 29,700 microseconds from a shell loop of \code{cat}, 34 a
+second. The C program is faster by $29\,700 / 571 \approx 52$ times, the chapter's ``fifty''. The
+shell pays for a fork and an exec on every value, and even the C program pays for at least one
+system call and for turning the number into text, for one value. The sysfs path is a way to
+inspect a device, not a way to move samples.
+
+\xpart{e} To see every sample, the reader must read at least as often as the device produces one,
+so the limit is the rate of reads. From a shell that is about 34 a second: above about 30\,Hz a shell
+loop misses samples (\secref{c11:app:a8}). From C it is 1,748 a second at best, before the program
+does anything with the data; \code{qa-dev}'s 881 a second already takes half of that, so around
+1\,kHz a loop is marginal, and above about 1.7\,kHz it cannot keep up at all. What IIO offers
+instead is its buffered mode, triggered or not: the driver pushes each sample into a buffer in the
+kernel as it arrives, and userspace reads them in batches from \file{/dev/iio:deviceN}, blocking
+until they are there, so one system call carries many samples and none is lost while the buffer has
+room. It exists because a value-at-a-time interface cannot keep up with a device that samples.
+
+\xpart{f} ``Programmed for a 1\,ms period, 1,000 samples a second, \code{qa-dev} produced about 881
+samples in a second, which is the difference between two counter values read through
+\code{in_voltage0_raw} a second apart. The shortfall is in the device model's timing, which arms each
+sample one period after its timer actually fired and is serviced late by QEMU, and not in the driver
+or in IIO; in direct mode the driver delivers no stream at all, only the latest value when asked.''
+Measured: the two values, their difference, and the interrupt count over the same interval if you
+took it. Inferred: that the shortfall belongs to the device's timer rather than to the driver, which
+rests on reading \file{qa-dev.c} and on Chapter~\ref{c8:ch}'s measurements; and that the interval
+between the reads was one second, when from a shell it was a little longer.

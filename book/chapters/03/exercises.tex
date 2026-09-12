@@ -1,0 +1,288 @@
+% Section 3.4, from lectures/L03/appendix/c_exercises.md.
+
+\section{Exercises}
+\label{c3:sec:exercises}\label{c3:app:c}
+
+\begin{aside}
+Nine, ending with the Cross-check. Do them in order; Exercise~\ref{c3:ex:9} needs a kernel build and
+is the one to start early, because it takes about twenty minutes of waiting.
+
+Where an exercise can be checked mechanically, a \textbf{Check yourself} line says how.
+
+The kernel source is in \file{build/linux-6.12.30} and the built tree in \file{build/kernel}; both
+are there after \code{make kernel}. Nothing here needs the network.
+
+\textbf{Solutions.} The exercises that are not Code are answered in \secref{sol:sec:c3}. The Code
+exercises have no solution: each is checked by running it, as its Check yourself line says.
+\end{aside}
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{What kind of program the kernel is}{Recall}
+\label{c3:ex:1}
+
+\xpart{a} Name three things that are true of a userspace program and false of the kernel.
+
+\xpart{b} ``Linux is a monolithic kernel.'' What exactly does that claim, and what does it
+\textbf{not} claim? In particular, does it say anything about how the source is organised?
+
+\xpart{c} A userspace program dereferences a null pointer and the system carries on. The kernel
+dereferences a null pointer. Describe what happens instead, and say why the difference is structural
+rather than a matter of the kernel being better tested.
+
+\xpart{d} Why is there no \code{printf} in the kernel, given that there is obviously a way to print
+things?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{The two interfaces}{Recall}
+\label{c3:ex:2}
+
+\xpart{a} State the stability guarantee on the system call interface, and the stability guarantee on
+the kernel's internal API.
+
+\xpart{b} Those two answers are opposites. For each, give the practical consequence for someone
+maintaining an out-of-tree driver.
+
+\xpart{c} A colleague proposes that Linux should have a stable driver ABI so that vendors can ship
+binary drivers. Give the strongest argument against, and name the file in the tree that makes it.
+
+\xpart{d} Your driver is in the mainline tree. An internal API it uses changes. Who updates your
+driver, and why?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{Reading Kconfig}{Hand calculation}
+\label{c3:ex:3}
+
+From \file{drivers/gpio/Kconfig} in the pinned tree:
+
+\begin{console}
+config GPIO_SYSFS
+	bool "/sys/class/gpio/... (sysfs interface)" if EXPERT
+	depends on SYSFS
+	select GPIO_CDEV # We need to encourage the new ABI
+
+config GPIO_CDEV
+	bool
+	prompt "Character device (/dev/gpiochipN) support" if EXPERT
+	default y
+\end{console}
+
+\xpart{a} Your \code{.config} has \code{CONFIG_SYSFS=y} and \code{\# CONFIG_EXPERT is not set}. You
+add \code{CONFIG_GPIO_SYSFS=y} to a fragment and run \code{olddefconfig}. What is in the final
+\code{.config}, and why?
+
+\xpart{b} Same question with \code{CONFIG_EXPERT=y}.
+
+\xpart{c} \code{GPIO_CDEV} has \code{default y} and a prompt behind \code{EXPERT}. With
+\code{EXPERT} off, is \code{CONFIG_GPIO_CDEV} set? Explain how a symbol nobody was asked about gets
+a value.
+
+\xpart{d} Explain, in one sentence each, what \code{depends on} does and what \code{select} does.
+Then say which of the two can produce a \code{.config} that violates a \code{depends on} line
+somewhere else, and how.
+
+\xpart{e} You want \file{/dev/gpiochipN} on a kernel with \code{EXPERT} off. Which symbol do you
+set, and does it work?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{Built in or module}{Hand calculation}
+\label{c3:ex:4}
+
+For each, say whether the option must be \code{=y}, may be \code{=m}, or cannot be \code{=m} at all,
+and give the reason in one sentence.
+
+\xpart{a} The driver for the SATA controller holding the root filesystem, on a system with no
+initramfs.
+
+\xpart{b} The same, on a system with an initramfs containing that driver.
+
+\xpart{c} \code{CONFIG_GPIOLIB}, which is declared \code{bool} rather than \code{tristate}.
+
+\xpart{d} A driver for a USB device the user may or may not plug in.
+
+\xpart{e} The filesystem type of the root filesystem, with no initramfs.
+
+\xpart{f} \code{CONFIG_PREEMPT_RT}.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{Navigating the tree}{Design}
+\label{c3:ex:5}
+
+For each, say which directory you would look in \textbf{first}, and give the search you would run if
+that did not find it.
+
+\xpart{a} The code that decides which task runs next.
+
+\xpart{b} The driver for an I2C temperature sensor.
+
+\xpart{c} The definition of \code{struct file_operations}.
+
+\xpart{d} The arm64 exception entry path.
+
+\xpart{e} The implementation of the \code{openat} system call.
+
+\xpart{f} The kernel message \code{Attempted to kill init!}.
+
+For \textbf{f)}, actually run your search on the pinned tree and give the file and line.
+
+% ------------------------------------------------------------------------------------------
+\exercise{The kernel report}{Code}
+\label{c3:ex:6}
+
+Write \file{lectures/L03/lab/kernel-report.sh}, a POSIX shell script that runs on the target and
+reports what the running kernel was configured with. It is checked by the shipped
+\file{lectures/L03/lab/run.sh}, so the key names are a contract.
+
+\begin{narrowtable}{@{}ll@{}}
+  \thead{Key} & \thead{Value} \\
+  \midrule
+  \code{version} & The kernel version alone, for example \code{6.12.30} \\
+  \code{smp} & \code{yes} or \code{no} \\
+  \code{preempt} & One of \code{none}, \code{preempt}, \code{preempt_dynamic}, \code{preempt_rt} \\
+  \code{hz} & The value of \code{CONFIG_HZ}, or \code{unknown} (see below) \\
+  \code{modules} & \code{yes} or \code{no}: can this kernel load modules at all \\
+  \code{filesystems} & How many filesystem types the kernel knows \\
+  \code{char-majors} & How many character device majors are claimed \\
+  \code{config-source} & \code{config.gz} or \code{inferred} (see below) \\
+\end{narrowtable}
+
+\noindent \textbf{The point of the exercise is the last two rows.} Some kernels are built with
+\code{CONFIG_IKCONFIG_PROC}, which embeds the configuration and exposes it as
+\file{/proc/config.gz}; on those, every question above can be answered by looking it up. Most
+kernels you meet in the field are not, and then the same questions must be answered from other
+evidence, or admitted to be unanswerable.
+
+Your script must handle both:
+\begin{itemize}
+  \item If \file{/proc/config.gz} is readable, report \code{config-source: config.gz} and read
+    \code{hz} from it.
+  \item If it is not, report \code{config-source: inferred}, and report \code{hz: unknown}.
+\end{itemize}
+\textbf{Report \code{unknown} rather than guessing.} There is no honest way to read \code{CONFIG_HZ}
+off a running kernel without the config, and a script that prints a confident number it cannot
+justify is worse than one that admits the gap. \file{run.sh} checks for exactly this.
+
+Two more traps, both of which \file{run.sh} checks:
+\begin{itemize}
+  \item \textbf{\code{char-majors} counts character devices only.} \file{/proc/devices} has two
+    sections.
+  \item \textbf{Test for \code{PREEMPT_RT} before \code{PREEMPT}.} The string \code{PREEMPT} is a
+    prefix of \code{PREEMPT_RT}, so a \code{case} that tests the shorter one first reports an RT
+    kernel as a plain preemptible one. Chapter~\ref{c12:ch} depends on telling them apart.
+\end{itemize}
+
+\checkyourself \code{make test L=L03} reports \code{SKIPPED} before you write it and \code{PASSED}
+after, with seventeen checks. Then do Exercise~\ref{c3:ex:9}, which turns \file{/proc/config.gz}
+off, and run \code{make test L=L03} again; it must still pass, with \code{config-source} now reading
+\code{inferred}.
+
+% ------------------------------------------------------------------------------------------
+\exercise{What is in this kernel that need not be}{Code}
+\label{c3:ex:7}
+
+Using the running target and the built tree, answer with a command and a number.
+
+\xpart{a} How many modules did the build produce, and how many are installed on the target?
+
+\xpart{b} How many symbols does the kernel export to modules? Compare \file{/proc/kallsyms} with the
+number of \emph{exported} symbols in \file{build/kernel/Module.symvers}.
+
+\xpart{c} How much memory was returned to the system after boot by discarding \code{__init} code?
+Find the kernel message that says so.
+
+\xpart{d} \code{Image} is 24 MB. How large is \code{vmlinux}, and account for the difference in one
+sentence.
+
+\xpart{e} Name three subsystems that are compiled into this kernel that the emulated machine cannot
+possibly use, and find them in \file{/proc/filesystems} or \file{/proc/devices} to prove they are
+there.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{A configuration for a real product}{Design}
+\label{c3:ex:8}
+
+You are configuring a kernel for a product: an ARM64 SoC, 256 MB of RAM, one Ethernet interface, an
+eMMC holding an ext4 root filesystem, an I2C sensor, and a watchdog. It boots from U-Boot with no
+initramfs. It must support field updates of the sensor driver without a reboot.
+
+\xpart{a} For each of the seven components, say \code{=y}, \code{=m} or \code{=n}, and why.
+
+\xpart{b} Which of the decisions above would, if you got them wrong, produce a kernel that does not
+boot at all? Describe the symptom.
+
+\xpart{c} The product later gains a second hardware variant with a different sensor. What changes
+about your configuration strategy, and what would you use \code{savedefconfig} for?
+
+\xpart{d} Your build is taking forty minutes. Name the first thing to look at, and say roughly what
+you expect to find, based on what \file{kernel/trim.config} does for this course.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent]{What one config option costs}{Cross-check}
+\label{c3:ex:9}
+
+Predict a number, change one line, measure, and reconcile. The three measurements disagree with each
+other and with your prediction, and all of them are correct.
+
+\code{CONFIG_IKCONFIG} embeds a compressed copy of the \code{.config} into the kernel so that the
+running system can be asked what it was built with. It is a good option to measure because its
+contribution is mostly one blob whose size you can find out in advance.
+
+\xpart{a} \textbf{Predict.} With the current kernel built, run:
+
+\begin{shell}
+size -A build/kernel/kernel/configs.o
+\end{shell}
+
+\noindent Add up the four sections that \secref{c3:app:b6} counts as the option's content. That is
+what \code{CONFIG_IKCONFIG} contributes. Write the number down.
+
+\xpart{b} \textbf{Check the prediction two other ways.} The bulk of it is the compressed config
+itself, and you can measure that independently:
+
+\begin{shell}
+gzip -9 -c build/kernel/.config | wc -c        # on the host
+ls -l /proc/config.gz                           # on the target, after make boot
+\end{shell}
+
+\noindent Do all three agree? Should they be identical, and if not, why not?
+
+\xpart{c} \textbf{Record the baseline.} Note the exact byte counts of both
+\file{build/kernel/arch/arm64/boot/Image} and \file{build/kernel/vmlinux}, and the section sizes
+from \code{size -A build/kernel/vmlinux}.
+
+\xpart{d} \textbf{Change one line.} Create \file{kernel/local.config}, which is merged last and is
+gitignored:
+
+\begin{shell}
+printf '# CONFIG_IKCONFIG is not set\n' > kernel/local.config
+make kernel
+\end{shell}
+
+\xpart{e} \textbf{Measure the same three things again.} You now have, for the same one-line change:
+\begin{itemize}
+  \item a change in \code{vmlinux}'s \textbf{section sizes},
+  \item a change in the \textbf{\code{vmlinux} file},
+  \item a change in the \textbf{\code{Image}}.
+\end{itemize}
+
+\xpart{f} \textbf{Reconcile.} Answer each:
+\begin{itemize}
+  \item Which of the three measurements is closest to your prediction from \textbf{a)}, and which is
+    furthest? By what factor is the furthest one out?
+  \item Look at the per-section deltas. Two sections account for nearly all of it. For each, compare
+    the section's delta against the bytes \file{configs.o} contributed to it. They are not equal.
+    What is the relationship between the two numbers, and what does 4096 have to do with it?
+  \item The \code{Image} delta is a suspiciously round number. What is it a multiple of, and what
+    does that tell you about how the \code{Image} is laid out?
+  \item Given all that: if you now removed a \emph{second} option contributing another 34 KB, would
+    the \code{Image} shrink by the same amount again? Explain.
+\end{itemize}
+
+\xpart{g} Boot the smaller kernel and run \code{make test L=L03}. Your report from
+Exercise~\ref{c3:ex:6} should still pass, with \code{config-source} now reading \code{inferred}. If
+it does not, Exercise~\ref{c3:ex:6}'s requirement to handle both worlds is the part you skipped.
+
+\xpart{h} A colleague asks ``how much does \code{CONFIG_IKCONFIG} cost?''. Give them a single number
+and a sentence, and say which of your measurements you chose and why.
+
+\textbf{Restore the kernel afterwards} with \code{rm kernel/local.config && make kernel}, so that
+the labs of later chapters start from the configuration they were written against.

@@ -1,0 +1,332 @@
+% Section 3.2, from lectures/L03/appendix/b_kconfig_and_kbuild.md.
+
+\section{Kconfig and Kbuild}
+\label{c3:app:b}
+
+Configuring a kernel is choosing, from about eighteen thousand options, the few thousand that
+describe your machine. This section is how that choice is expressed, how it is enforced, and how
+the result becomes a kernel. It ends with what a single option costs, which is the Cross-check,
+Exercise~\ref{c3:ex:9}.
+
+\subsection{What a configuration is}
+\label{c3:app:b1}
+
+A \code{.config} is a plain text file of assignments. The one this course builds has \textbf{5,725
+lines}:
+
+\begin{console}
+CONFIG_ARM64=y
+CONFIG_HZ=250
+CONFIG_MODULES=y
+CONFIG_IIO=m
+# CONFIG_BTRFS_FS is not set
+\end{console}
+
+\noindent Three forms appear, and the third is not the same as absence:
+
+\begin{booktable}{@{}>{\hsize=0.37\hsize}L>{\hsize=1.63\hsize}L@{}}
+  \thead{Form} & \thead{Means} \\
+  \midrule
+  \code{CONFIG_X=y} & Built into the kernel image \\
+  \code{CONFIG_X=m} & Built as a loadable module \\
+  \code{\# CONFIG_X is not set} & Explicitly off \\
+  \emph{(absent entirely)} & The symbol does not exist in this tree, or its dependencies are unmet so it was never offered \\
+\end{booktable}
+
+\noindent That last row is the one that costs people an afternoon. If you add \code{CONFIG_FOO=y} to
+a fragment and it does not appear in the final \code{.config}, the symbol was not \emph{rejected};
+it was never \emph{asked about}, because something it depends on is off. This course's
+\file{ci/kernel.sh} checks for exactly this after merging and warns by name, because the failure is
+otherwise silent.
+
+\textbf{The \code{.config} is generated, not authored.} It is produced by the Kconfig tools from the
+\code{Kconfig} files scattered through the tree, and hand-editing it is a mistake: set one symbol
+without its dependencies and the next \code{make} will either revert it or produce a tree that does
+not build.
+
+\subsection{Kconfig: the language}
+\label{c3:app:b2}
+
+Every directory that offers options has a \code{Kconfig} file. An entry looks like this, from
+\file{drivers/gpio/Kconfig}:
+
+\begin{console}
+config GPIO_SYSFS
+	bool "/sys/class/gpio/... (sysfs interface)" if EXPERT
+	depends on SYSFS
+	select GPIO_CDEV # We need to encourage the new ABI
+	help
+	  Say Y here to add the legacy sysfs interface for GPIOs.
+\end{console}
+
+\noindent Line by line, because all five lines do something:
+
+\begin{booktable}{@{}>{\hsize=0.49\hsize}L>{\hsize=1.51\hsize}L@{}}
+  \thead{Line} & \thead{Effect} \\
+  \midrule
+  \code{config GPIO_SYSFS} & Declares the symbol, which becomes \code{CONFIG_GPIO_SYSFS} \\
+  \code{bool "..."} & Its type, and the prompt shown in \code{menuconfig} \\
+  \code{if EXPERT} & The \emph{prompt} only appears when \code{EXPERT} is on \\
+  \code{depends on SYSFS} & The symbol cannot be enabled unless \code{SYSFS} is \\
+  \code{select GPIO_CDEV} & Turning this on turns \code{GPIO_CDEV} on too \\
+  \code{help} & The text \code{menuconfig} shows when you press \code{?} \\
+\end{booktable}
+
+\noindent Types are \code{bool} (y or n), \code{tristate} (y, m or n), \code{int}, \code{hex} and
+\code{string}. Only \code{tristate} symbols can be modules, which is why \code{CONFIG_GPIOLIB}
+cannot be \code{=m} however much you would like it to be.
+
+\subsubsection{\code{depends on} against \code{select}}
+\label{c3:app:b:depends-on-against-select}
+
+These two are constantly confused and behave oppositely.
+
+\textbf{\code{depends on B} means ``do not offer me unless B is on''.} It is a precondition. If
+\code{B} is off, the symbol is hidden and cannot be set.
+
+\textbf{\code{select B} means ``if I am on, force B on''.} It is an imperative, and critically
+\textbf{it does not check \code{B}'s own dependencies.} You can \code{select} a symbol into a state
+its own \code{depends on} line forbids, producing a \code{.config} that is internally inconsistent
+and a build that fails somewhere unrelated.
+
+This is why kernel maintainers discourage \code{select} for anything with dependencies of its own,
+and why \file{Documentation/kbuild/kconfig-language.rst} says it should be used only for non-visible
+symbols. It is also the answer to ``how did an option I never chose end up in my \code{.config}'':
+something selected it.
+
+\code{GPIO_SYSFS} above is a live example of both. Adding \code{CONFIG_GPIO_SYSFS=y} to a fragment
+in this course \textbf{does not work}, because its prompt is behind \code{if EXPERT} and
+\code{EXPERT} is off, so the symbol is never offered. That is not hypothetical; it happened while
+this course was being written, \file{ci/kernel.sh} reported \code{CONFIG_GPIO_SYSFS=y did not
+survive olddefconfig}, and the fix was to use \code{CONFIG_GPIO_CDEV} instead, which is the modern
+interface and did not need \code{EXPERT} at all.
+
+\subsection{The tools}
+\label{c3:app:b3}
+
+\begin{booktable}{@{}>{\hsize=0.46\hsize}L>{\hsize=1.54\hsize}L@{}}
+  \thead{Command} & \thead{Does} \\
+  \midrule
+  \code{make defconfig} & The architecture's default configuration \\
+  \code{make menuconfig} & Interactive, with search: press \code{/} \\
+  \code{make olddefconfig} & Take the existing \code{.config}, answer new questions with defaults \\
+  \code{make savedefconfig} & Write a \emph{minimal} config: only what differs from the defaults \\
+  \code{make allnoconfig} & Everything off that can be \\
+  \code{make tinyconfig} & The smallest kernel that builds \\
+\end{booktable}
+
+\noindent Two of these matter more than the others for real work.
+
+\textbf{\code{olddefconfig} is what you run after changing anything.} It resolves the consequences
+of your change: symbols that are now offered get their defaults, symbols that are now impossible get
+removed. Every merge in this course is followed by one.
+
+\textbf{\code{savedefconfig} is how you store a configuration.} A full \code{.config} is 5,725
+lines, of which perhaps a hundred are choices anyone made; the rest are defaults.
+\code{savedefconfig} strips it to the difference, which is what
+\code{arch/arm64/configs/*_defconfig} files are and why they are readable. Committing a full
+\code{.config} to a product repository is a mistake for the same reason as committing generated
+code.
+
+\subsubsection{Config fragments}
+\label{c3:app:b:config-fragments}
+
+A fragment is a partial \code{.config} merged over a base:
+
+\begin{shell}
+scripts/kconfig/merge_config.sh -m -O $OUT $OUT/.config frag1.config frag2.config
+make olddefconfig
+\end{shell}
+
+\noindent This is how this course configures its kernel, and the reason is maintainability: the base
+is \code{defconfig}, and the course's own choices are three small files where each line can carry a
+comment saying why it is there. \file{kernel/qa.config} names the lecture that wanted each option;
+\file{kernel/trim.config} says what each removal was for. A 5,725-line \code{.config} can say
+neither.
+
+Later fragments override earlier ones, which is why \file{kernel/local.config} is merged last: it is
+yours, and it wins.
+
+\lecturefigure{lectures/L03/appendix/images/kconfig_flow.png}
+  {Five boxes in a row: defconfig, fragments, merge, olddefconfig and .config. A red arrow drops from
+   olddefconfig to a callout reading CONFIG\_PREEMPT\_RT=y, silently discarded, because it depends
+   on EXPERT and a symbol whose dependencies are unmet has no prompt.}
+  {fig:kconfig_flow}
+
+\subsection{Kbuild: turning a configuration into a kernel}
+\label{c3:app:b4}
+
+The build reads the same \code{CONFIG_} symbols, from two directions.
+
+\textbf{In Makefiles}, the symbol chooses whether an object is built and how:
+
+\begin{makecode}
+obj-$(CONFIG_RTC_DRV_PL031) += rtc-pl031.o
+\end{makecode}
+
+\noindent \code{obj-y} is built into the kernel, \code{obj-m} becomes a module, and when the symbol
+is not set the line adds to \code{obj-}, which nothing reads. So that one line expands to one of
+three things depending on a symbol, and this is the entire mechanism by which a configuration
+selects code.
+
+\textbf{In C}, the same symbols are available as macros, generated into
+\file{include/generated/autoconf.h}:
+
+\begin{ccode}
+#ifdef CONFIG_SMP
+        /* ... */
+#endif
+
+if (IS_ENABLED(CONFIG_IIO)) { ... }   /* true for =y and =m */
+\end{ccode}
+
+\noindent \code{IS_ENABLED} is preferred over \code{\#ifdef} where possible, because the code inside
+it is still compiled and type-checked even when the option is off, and then discarded by the
+optimiser. Code behind \code{\#ifdef} rots, because nobody builds it.
+
+\subsubsection{The variables that matter}
+\label{c3:app:b:the-variables-that-matter}
+
+\begin{booktable}{@{}lL@{}}
+  \thead{Variable} & \thead{Meaning} \\
+  \midrule
+  \code{ARCH} & Target architecture; selects \code{arch/$(ARCH)/} \\
+  \code{CROSS_COMPILE} & Toolchain prefix, for example \code{aarch64-linux-gnu-} \\
+  \code{O=} & Build output directory, keeping the source tree clean \\
+  \code{M=} & Build an out-of-tree module in this directory (Chapter~\ref{c4:ch}) \\
+  \code{-j} & Parallel jobs \\
+\end{booktable}
+
+\noindent \code{O=} is worth insisting on. It puts every generated file in one directory, so two
+configurations can share one source tree; this course builds \file{build/kernel} and
+\file{build/kernel-rt} from the same \file{build/linux-6.12.30}, which is what lets
+Chapter~\ref{c12:ch} boot one and then the other without a second download.
+
+\subsubsection{What comes out}
+\label{c3:app:b:what-comes-out}
+
+\begin{booktable}{@{}>{\hsize=0.48\hsize}L>{\hsize=1.52\hsize}L@{}}
+  \thead{Artefact} & \thead{What it is} \\
+  \midrule
+  \code{vmlinux} & The linked kernel as an ELF object, with symbols. 31,468,440 bytes \\
+  \code{arch/arm64/boot/Image} & The same, stripped and laid out for a bootloader. 24,943,104 bytes \\
+  \code{*.ko} & Loadable modules, scattered through the tree \\
+  \code{System.map} & Symbol addresses, for decoding an oops \\
+  \code{*.dtb} & Compiled device trees, when the platform has them \\
+\end{booktable}
+
+\noindent \textbf{The bootloader loads \code{Image}, not \code{vmlinux}.} \code{vmlinux} is what you
+point a debugger at.
+
+\code{make modules_install INSTALL_MOD_PATH=<dir>} stages the modules into a directory tree and runs
+\code{depmod} to generate \code{modules.dep}, which is what \code{modprobe} reads. This course
+stages into \file{build/kernel/modules-install} and then copies a curated handful into the
+initramfs; \textbf{458 modules are built and 3 are installed}, because the target can use three of
+them.
+
+\subsection{Built in or module}
+\label{c3:app:b5}
+
+The choice is per-symbol and it is not free either way.
+
+\begin{booktable}{@{}l>{\hsize=0.76\hsize}L>{\hsize=1.24\hsize}L@{}}
+   & \thead{\code{=y} built in} & \thead{\code{=m} module} \\
+  \midrule
+  Available at & Boot, immediately & After the root filesystem is mounted \\
+  Costs image size & Always & Only when loaded \\
+  Can be updated & No, rebuild the kernel & Yes, replace the \code{.ko} \\
+  Can be unloaded & No & Yes \\
+  Boot time & Included & Deferred \\
+\end{booktable}
+
+\noindent \textbf{The rule that follows from row one is absolute:} anything needed to reach the root
+filesystem cannot be a module, because the modules live on the root filesystem. The driver for your
+storage controller, its bus, and the filesystem type must all be \code{=y}, or must be in an
+initramfs, which is a root filesystem in RAM that exists precisely to break this circularity.
+
+Everything this target uses is built in except three modules, and the target's root filesystem is
+an initramfs, so the circularity never arises. On a product with real storage it is the first thing to
+get right.
+
+\subsection{What one option costs}
+\label{c3:app:b6}
+
+The Cross-check asks you to predict this, so the method matters more than the answer.
+
+\textbf{Step 1: find the objects.} An option builds one or more objects. \code{CONFIG_IKCONFIG}
+builds \file{kernel/configs.o}, which embeds a compressed copy of the \code{.config} so the running
+kernel can be asked what it was built with.
+
+\textbf{Step 2: measure them.} \code{size -A} gives the per-section sizes:
+
+\begin{console}
+$ size -A build/kernel/kernel/configs.o
+section                         size   addr
+.text                             76      0
+.data                              0      0
+.bss                               0      0
+.rodata                        34048      0
+.initcall6.init                    4      0
+.rodata.str1.8                    10      0
+.exit.text                        40      0
+.init.text                       108      0
+__patchable_function_entries      16      0
+.discard.addressable               8      0
+.exitcall.exit                     8      0
+.modinfo                         150      0
+.comment                          32      0
+.note.GNU-stack                    0      0
+.note.gnu.property                32      0
+Total                          34532
+\end{console}
+
+\noindent Four of these are the option's content: its code (\code{.text}), its read-only data and
+strings (\code{.rodata}, \code{.rodata.str1.8}), and the 4-byte entry that has its init function
+called at boot (\code{.initcall6.init}). That is \textbf{34,138 bytes}, and nearly all of the 34,048
+is the compressed configuration itself. The rest is 148 bytes of \code{__init} and \code{__exit}
+code, a few bookkeeping entries of 8 to 16 bytes, and sections that describe the object rather than
+add to the kernel, such as \code{.modinfo} and \code{.comment}; \code{Total} counts all of them. You
+can check the 34,048 independently two ways: \code{gzip -9 -c build/kernel/.config | wc -c}
+gives 33,944, and on the running target \code{ls -l /proc/config.gz} shows 33,936. Three routes,
+agreeing to within a fraction of a percent.
+
+\textbf{Step 3: change one line and rebuild.}
+
+\begin{shell}
+echo '# CONFIG_IKCONFIG is not set' > kernel/local.config
+make kernel
+\end{shell}
+
+\noindent \textbf{Step 4: measure the result, and be specific about what you measured.} This is
+where the exercise turns, because there are three artefacts and they give three different answers.
+Working that out is Exercise~\ref{c3:ex:9}.
+
+The general lesson, which applies well beyond this option: \textbf{``how big is it'' is not a
+question with one answer.} Content, sections and image are three different measurements of the same
+change, they differ by roughly a factor of two here, and quoting one without saying which is how
+size budgets go wrong.
+
+\subsection{Where this course's configuration comes from}
+\label{c3:app:b7}
+
+Reading the three fragments is the fastest way to see the whole mechanism in use.
+
+\begin{booktable}{@{}>{\hsize=0.50\hsize}L>{\hsize=1.50\hsize}L@{}}
+  \thead{File} & \thead{Purpose} \\
+  \midrule
+  \file{kernel/trim.config} & Removes what the emulated machine cannot have \\
+  \file{kernel/qa.config} & Adds what the course needs, naming the lecture per option \\
+  \file{kernel/rt.config} & \code{PREEMPT_RT}, for Chapter~\ref{c12:ch}. Four lines \\
+  \file{kernel/local.config} & Yours. Gitignored, merged last, and the lab \\
+\end{booktable}
+
+\noindent \file{trim.config} is the interesting one for this chapter. arm64 \code{defconfig} is not
+a minimal configuration; it is the union of every arm64 machine anyone has upstreamed, and it
+enables \textbf{44 SoC platform families}, compiling clock, pinctrl, DMA and PHY drivers for
+forty-four vendors' silicon. QEMU's \code{virt} machine is none of them.
+
+Turning those off is what took this course's build from \textbf{about an hour and roughly two
+thousand modules} to \textbf{eighteen minutes and 458}. That is one fragment, and its effect is
+larger than every other configuration decision in the course put together. It is also the answer to
+why the \code{Image} is 24 MB and not 3 MB: it is still not a minimal kernel, and the exercises ask
+you to find out how much further it could go.

@@ -1,0 +1,261 @@
+% Solutions to the Chapter 5 exercises that are not code, from lectures/L05/appendix/c_exercises.md.
+% Exercises 5.6 and 5.7 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 5: Character Device Drivers}
+\label{sol:sec:c5}
+Answers to the exercises in \secref{c5:sec:exercises}. Exercises~\ref{c5:ex:6} and~\ref{c5:ex:7}
+are Code, and are checked on the target as their Check yourself lines say.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c5:ex:1}{The node and the number}{Recall}
+
+\xpart{a} The number is whatever was free when the driver loaded, so the script breaks in two
+separate ways. \textbf{The driver moves:} a new module, a different load order or a kernel update
+that registers another dynamically numbered driver first, and \code{qa_fifo} gets a different
+major; the script then fails to find its device. \textbf{Something else takes 243:} after the same
+kind of change another driver can be handed 243, and the script opens that driver's device and
+talks to it without any error at all. The second is the worse of the two, because nothing fails.
+
+\xpart{b} It creates a second name for the same device: a directory entry of type character with
+major 243 and minor 0, written without consulting anything (\secref{c5:app:a1}). Opening it opens
+exactly what opening \file{/dev/qa_fifo} opens, the same driver and the same FIFO, so bytes written
+through one name come out of the other.
+
+\xpart{c} Step 5, \code{device_create}. \file{/proc/devices} lists the name as soon as the number
+is allocated (step 2), but the node is made by devtmpfs in response to the uevent that
+\code{device_create} emits (\secref{c5:app:a6}); no device, no uevent, no node. If
+\code{class_create} was skipped as well, there was no class to create the device in.
+
+\xpart{d} \code{ENXIO} comes from the kernel's lookup of a registered \code{cdev} for the node's
+major and minor, before any driver is involved: nothing is registered for that pair. Either the
+driver is not loaded, or it allocated a number but never called \code{cdev_add}, or the node is
+stale and carries numbers from an earlier boot. It rules out a missing node (\code{ENOENT}), a
+permissions problem (\code{EACCES}), and anything in your own \code{open}, which was never called.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c5:ex:2}{The table}{Recall}
+
+\xpart{a} \code{.owner} is what makes \code{open} take a reference on the module, and the reference
+is what makes \code{rmmod} refuse with ``Module is in use''. Without it the module's use count stays
+at zero while a process holds an open file whose \code{f_op} points at the module's
+\code{file_operations} table. \code{rmmod} succeeds and frees the module's code and data, table
+included. The process's next \code{read}, \code{write} or \code{close} calls through a pointer into
+freed memory: an oops if you are lucky, and whatever has been loaded there since if you are not.
+
+\xpart{b} Not a bug, as long as there is no per-open state to free, which is the case here (the
+table in \secref{c5:app:b2} marks \code{.release} as not required). Nothing is called instead:
+when the last reference to the file goes, the VFS calls \code{.release} only if it is set, and
+otherwise simply drops its own reference on the module and frees the \code{struct file}.
+
+\xpart{c} Yes. A missing \code{.open} is not a refusal: the character device layer calls the
+driver's \code{open} only if there is one, and otherwise the open succeeds and returns a
+descriptor.
+
+\xpart{d} The device is live. Any process that opens a node with your numbers, and a node can exist
+before \code{device_create} makes one, can call your \code{open}, \code{read} and \code{write}
+while the rest of your init function is still running, and on another CPU at the same time. The
+rule: \textbf{everything a callback touches must be fully set up before the call that publishes it},
+so the FIFO is created before \code{cdev_add}, never after (\secref{c5:app:b2}).
+
+\xpart{e} It is called when the last reference to the open file goes, which is when the last
+descriptor referring to it is closed. The simplest case: a process opens the device and then calls
+\code{fork}. Parent and child now hold descriptors for the same open file. The parent's
+\code{close} drops one reference and calls nothing; the child's \code{close} drops the last and
+calls \code{release}. \code{dup} followed by two \code{close}s in one process does the same.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c5:ex:3}{Return values}{Hand calculation}
+
+\xpart{a} 40. \code{read} returns 40, the buffer holds the 40 bytes, and the FIFO is now empty. A
+short count is a success.
+
+\xpart{b} \code{-EAGAIN}. \code{read} returns $-1$ with \code{errno} set to \code{EAGAIN},
+``Resource temporarily unavailable''.
+
+\xpart{c} 0. A count of 0 returns 0 and consumes nothing, so the level stays 40. The program sees
+the same 0 that means end of file everywhere else, which is harmless only because it asked for
+nothing.
+
+\xpart{d} 60. The first 60 bytes are accepted and the FIFO is full; the program sees 60 and must
+write the other 40 later.
+
+\xpart{e} \code{-ENOSPC}. \code{write} returns $-1$ with \code{errno} set to \code{ENOSPC}, ``No
+space left on device''.
+
+\xpart{f} \code{-EFAULT}, provided there are bytes to deliver: the driver takes them from the FIFO
+into its bounce buffer, \code{copy_to_user} fails on the unmapped page, and \code{read} returns
+$-1$ with \code{errno} set to \code{EFAULT}, ``Bad address''. Note what the specification in
+\secref{c5:app:b2} does with the bytes it had already taken: they are gone, consumed and never
+delivered. (With the FIFO empty the driver returns \code{-EAGAIN} before it touches the pointer.)
+
+\xpart{g} \code{cat} takes the 0 as end of file and exits with status 0, having printed nothing.
+The loop ends at once, exactly as at the end of a file, and the program carries on as if the device
+had finished. The \code{perror} check never fires, because 0 is not less than 0. \textbf{None of the
+three reports a problem}, which is why returning 0 for ``nothing yet'' is a silent bug.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c5:ex:4}{A sequence of reads}{Hand calculation}
+
+\xpart{a}
+
+\begin{narrowtable}{@{}llrr@{}}
+  \thead{Step} & \thead{Call} & \thead{Returns} & \thead{Level after} \\
+  \midrule
+  1 & \code{write(fd, "abcdefghij", 10)} & 8 & 8 \\
+  2 & \code{read(fd, buf, 3)} & 3 & 5 \\
+  3 & \code{write(fd, "klm", 3)} & 3 & 8 \\
+  4 & \code{read(fd, buf, 100)} & 8 & 0 \\
+  5 & \code{read(fd, buf, 100)} & \code{-EAGAIN} & 0 \\
+\end{narrowtable}
+
+\noindent Step 1 is a short write: \code{abcdefgh} goes in and \code{ij} is refused. Step 5 is
+\code{-EAGAIN} and not 0, because the FIFO is empty rather than finished.
+
+\xpart{b} \code{defghklm}: the five bytes step 2 left behind, then the three step 3 added, oldest
+first. Step 4 overwrites the first eight bytes of \code{buf}, so the \code{abc} step 2 put there is
+gone.
+
+\xpart{c} Room is decided by the level, not by how much has ever been written. Step 2 took three
+bytes out, leaving three slots free, and step 3 asks for exactly three; in a ring those are the
+slots the first bytes occupied, reused by a write that wraps around the end of the storage.
+
+\xpart{d} A FIFO of capacity 8 that wastes a slot holds 7, and two steps change. \textbf{Step 1}
+returns 7 instead of 8, because only seven bytes fit. \textbf{Step 4} then returns 7 instead of 8,
+because there are only seven to take, and \code{buf} holds \code{defgklm}: the \code{h} was never
+stored. Steps 2, 3 and 5 return what they did before, 3, 3 and \code{-EAGAIN}, although the levels
+after steps 1 to 3 are each one lower (7, 4, 7). This is the implementation that
+\code{qa_fifo_uses_its_whole_capacity} exists to reject.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c5:ex:5}{Where does this belong}{Design}
+
+\xpart{a} \code{read()} on the device node: it is the device's data, a stream consumed in order,
+which is exactly what the file interface is for.
+
+\xpart{b} A read-only sysfs attribute: one value per file, readable by any tool. It already exists
+without further work, since the \code{capacity} module parameter appears as
+\file{/sys/module/qa_chardev/parameters/capacity}.
+
+\xpart{c} A read-only sysfs attribute. A field engineer's tools will read it on production
+systems, where debugfs is usually not mounted and often not built in, so it has to live somewhere
+that is guaranteed to be there.
+
+\xpart{d} debugfs. It is only useful while you are developing the driver, and debugfs is the one
+place that is explicitly not an interface: you may change it or delete it whenever you like.
+
+\xpart{e} An \code{ioctl} on the open device. It is an operation rather than a value, and it acts
+on the stream that the caller has open; terminals do the same thing through an \code{ioctl}, which
+is what \code{tcflush} is. A write-only sysfs attribute is defensible, but sysfs is for attributes,
+and an action dressed as one is harder to discover and to document.
+
+\xpart{f} A read-only sysfs attribute: a single fact about the device that never changes, and one
+that tools and udev rules can match on.
+
+\xpart{g} The sysfs attributes and the \code{ioctl} are ABI: the moment a program or a script uses
+them, their names, formats, numbers and meaning are fixed, and sysfs attributes are documented as
+such under \file{Documentation/ABI/}. debugfs is explicitly not. What follows for a product is that
+everything in sysfs or behind an \code{ioctl} has to be designed as if it will never change,
+because it will not be allowed to, and that nothing a shipped tool or a field engineer depends on
+may live in debugfs, which the product's kernel may not even contain. (The byte stream behind
+\code{read()} is an interface too, but its contract, bytes in order, is the file interface's own
+rather than one you invented.)
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c5:ex:8}{Reading the tests for what they miss}{Design}
+
+\xpart{a} Take the design \secref{c5:app:b1} suggests, a head and a level, with \code{qa_fifo_put}
+copying to \code{(head + level) \% capacity} and then storing \code{level = level + n}. The FIFO has
+capacity 8 and is empty, and two writers call \code{qa_fifo_put} with four bytes each, on two CPUs:
+\begin{enumerate}
+  \item Writer A reads \code{level}, 0, and copies \code{AAAA} into slots 0 to 3.
+  \item Writer B reads \code{level}, still 0, and copies \code{BBBB} into the same slots,
+    overwriting A's bytes.
+  \item A stores \code{level = 0 + 4}; B stores \code{level = 0 + 4}.
+\end{enumerate}
+Both calls return 4, so both writers believe their bytes are in, but the FIFO holds four bytes,
+all B's; A's data is lost without a trace. Change the timing and the level can end at 8 with slots
+4 to 7 never written, so a reader is handed four bytes of garbage. \textbf{None of the ten tests
+notices}, because every one of them runs on a single thread and never calls \code{qa_fifo_put}
+twice at once.
+
+\xpart{b} Any three of these, each worth testing:
+\begin{itemize}
+  \item \textbf{The \code{-EFAULT} path.} Nothing passes a bad pointer. Cheap to test: a program
+    that calls \code{read} and \code{write} with an address in an unmapped page, expecting
+    \code{EFAULT} and no oops.
+  \item \textbf{Unloading while the device is open.} Nothing checks \code{.owner}. Cheap: hold the
+    node open in one process and expect \code{rmmod} to refuse with ``Module is in use''.
+  \item \textbf{A failing init.} Nothing makes any init step fail, so no error path is ever run.
+    Test with \code{insmod qa_chardev.ko capacity=0}, which must fail cleanly because
+    \code{qa_fifo_create(0)} returns \code{NULL}, leaving no node, no class and no number behind;
+    later steps need fault injection.
+  \item \textbf{Huge requests.} The tester writes 4096 bytes at a time. A \code{read} asking for a
+    gigabyte must return a short count, not fail its bounce-buffer allocation.
+  \item \textbf{Memory pressure.} The bounce buffer's allocation failing must give \code{-ENOMEM}
+    rather than a crash; this needs the kernel's fault injection (\code{CONFIG_FAILSLAB}).
+\end{itemize}
+
+\xpart{c} Fewer than it seems, because a shell sees a command's exit status and its error message,
+and those carry more than nothing: \code{cat} exits with status 0 on end of file and with 1 and
+``Resource temporarily unavailable'' on \code{-EAGAIN}. Two checks it genuinely cannot make:
+\begin{itemize}
+  \item \textbf{\code{lseek} refused with \code{-ESPIPE}.} No command exposes the result of an
+    \code{lseek}; \code{dd skip=} on a file it cannot seek quietly reads and discards instead.
+  \item \textbf{Which error a call failed with.} The \code{-EAGAIN} and \code{-ENOSPC} checks
+    compare \code{errno} with a constant. A script sees only that a tool failed and a message whose
+    wording belongs to the tool and the C library, BusyBox's differing from coreutils', from tools
+    that may retry a short write or treat one error like another before you ever see it.
+\end{itemize}
+
+\xpart{d} Neither. The KUnit suite never loads \code{qa_chardev}, and the tester and \file{run.sh}
+only ever run the path on which every init step succeeds. What would catch it is a test that makes
+\code{class_create} fail, for example by registering a class called \code{qa_fifo} first so that
+it returns \code{-EEXIST}, run on a kernel with \code{CONFIG_DEBUG_KMEMLEAK}: after the failed
+load, a kmemleak scan reports the FIFO's allocation as unreferenced.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c5:ex:9}{A byte count worked out twice}{Cross-check}
+
+\xpart{a} With a capacity of 256:
+
+\begin{narrowtable}{@{}llrr@{}}
+  \thead{Step} & \thead{Call} & \thead{Returns} & \thead{Level after} \\
+  \midrule
+  1 & write of 200 bytes & 200 & 200 \\
+  2 & write of 100 bytes & 56 & 256 \\
+  3 & read of 512 bytes & 256 & 0 \\
+  4 & read of 512 bytes & \code{-EAGAIN} & 0 \\
+  5 & write of 300 bytes & 256 & 256 \\
+\end{narrowtable}
+
+\noindent The device accepts $200 + 56 + 256 = 512$ bytes in all and delivers 256 of them, so 256
+have passed all the way through and 256 are still inside when the sequence ends. A total of 600
+counted the requests rather than the returns, and 500 counted step 2 as a failure.
+
+\xpart{c} A driver that meets the specification gives exactly the table above, so any difference
+is in your prediction or your driver. \textbf{Step 2} is the one people get wrong by predicting
+\code{-ENOSPC}. The contract for \code{write} in \secref{c5:app:b2} decides it: \code{-ENOSPC} only
+when the FIFO is \emph{full}, and otherwise as many bytes as fit, which here is $256 - 200 = 56$.
+Predicting \code{-ENOSPC} there classes a value as an error; predicting 0 for step 4 classes an
+error as end of file. The total counts step 2 as 56, as the machine does.
+
+\xpart{d} With \code{capacity=128} the program sees 128, \code{-ENOSPC}, 128, \code{-EAGAIN} and
+128. Steps 1, 3 and 5 each return 128 instead of 200, 256 and 256, and step 2 changes kind as well
+as value: after step 1 the FIFO is full, so it is refused rather than short. Only step 4 is
+unchanged, because it depends only on the FIFO being empty, and the 512-byte read in step 3 empties
+a FIFO of any capacity up to 512.
+
+\xpart{e} The shipped tester finds the capacity by writing until it is refused, so on the
+\code{capacity=128} device it reports ``capacity measured from userspace: 128 bytes'' and passes
+every check. Your program compares against 200, 56, 256, \code{-EAGAIN} and 256, and reports four
+failures against a driver that is correct. The lesson: a test that encodes a configuration tests
+the configuration. Derive the expectation from the system under test, by measuring it or by reading
+the parameter back from sysfs, or a legitimate change of configuration turns into failures, and a
+team that learns to shrug at failing tests stops seeing the real ones.
+
+\xpart{f} Nothing is broken. The FIFO already held 200 of its 256 bytes, as it does after step 1,
+so 56 bytes were free: the driver accepted 56 and said so. That is a short write, and their program
+should have looked at the return value and written the remaining 244 bytes later, once a reader had
+made room, in a loop, exactly as for a pipe or a socket. The line they had not read is the first row
+of the table in \secref{c5:app:a:read-and-write}: this many bytes were transferred, and \textbf{a
+short count is normal, not an error}.

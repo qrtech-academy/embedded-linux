@@ -1,0 +1,48 @@
+% Chapter 2, typeset from lectures/L02: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{The Command Line, and the System Underneath It}
+\label{c2:ch}
+
+{\large\itshape The general Linux command line, taught as the set of questions you can ask a running
+kernel.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item The shell as a program: what a pipeline actually is, and what the kernel does to build one.
+  \item The filesystem hierarchy, and why \file{/usr} looks the way it does for a reason nobody
+    likes.
+  \item Processes, signals, and the tree; what PID 1 is for and what happens if it exits.
+  \item \file{/proc} and \file{/sys}: not directories, not files, and not the same thing as each
+    other.
+  \item \file{/dev}, device nodes, and what a major and minor number identify.
+  \item BusyBox against coreutils, measured rather than asserted.
+  \item \code{dmesg}, \code{ps}, \code{top} and \code{lsof}: the diagnostics this target actually
+    has, and the ones it does not.
+  \item Writing a script that reports the target's own configuration, out of \file{/proc} alone.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is the command line, taken as the set of questions you can ask a running kernel. It
+takes the shell apart as an ordinary program, down to the system calls a pipeline is built from,
+and follows processes through their tree, their states and the signals they are sent, to the one
+process that is different from all the others: PID 1, which cannot be killed and must not exit. It
+then opens the three directories through which a running system is inspected, \file{/proc},
+\file{/sys} and \file{/dev}, none of which holds a file, and measures what a two-megabyte BusyBox
+userland gives up against the one on your laptop.
+
+Read \secref{c2:app:a} first; it is the shell, the process tree and the filesystem hierarchy.
+\Secref{c2:app:b} is \file{/proc}, \file{/sys} and \file{/dev} in detail, and \secref{c2:app:b6},
+on reading those files from a script, is the background to the lab. The lab is
+specified in Exercise~\ref{c2:ex:6}: a shell script that reports the machine's own configuration
+out of \file{/proc}, one \code{key: value} line per fact, checked by a test that ships with the
+course. The exercises in \secref{c2:sec:exercises} end with the Cross-check: derive a
+context-switch rate by hand, have your script compute it, run the script again, and account for why
+the three do not agree. The lab is done when \code{make test L=L02} reports \textbf{PASSED}, with
+eighteen checks.
+
+\input{chapters/02/shell_and_processes}
+\input{chapters/02/proc_sys_dev}
+\input{chapters/02/summary}
+\input{chapters/02/exercises}

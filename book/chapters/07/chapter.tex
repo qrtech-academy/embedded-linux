@@ -1,0 +1,44 @@
+% Chapter 7, typeset from lectures/L07: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{Concurrency and Locking}
+\label{c7:ch}
+
+{\large\itshape Every way two pieces of kernel code can run at once, and what to do about each.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item Five sources of concurrency in a kernel, only one of which is another CPU.
+  \item Atomics: what they promise, and the much larger thing they do not.
+  \item Memory barriers, and why the compiler is as much of a problem as the processor.
+  \item Spinlocks, \code{_irq} and \code{_irqsave}; what each one disables and at what cost.
+  \item Mutexes and semaphores, and the single question that chooses between them and a spinlock.
+  \item Atomic context, \code{might_sleep()}, and why ``do not sleep here'' is not a style rule.
+  \item Deadlock, lock ordering, and lockdep.
+  \item Race a shared counter, watch it lose data, then fix it.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is about every way two pieces of kernel code can run at once, and what to do about
+each. It measures what an unprotected counter loses on the course's two-CPU target, and how hard
+that loss was to make appear at all. It explains why atomics fix a counter and not a data
+structure, what the compiler does to a loop that waits on a flag, how a spinlock and a mutex differ
+and the one question that chooses between them, what atomic context is and why sleeping in it is a
+bug even on the runs where nothing goes wrong, and how lockdep reports a deadlock that has not
+happened.
+
+Read \secref{c7:app:a} first; it is the sources of concurrency and the primitives.
+\Secref{c7:app:b} is deadlock, lock ordering and lockdep, and reads a real lockdep report from the
+lab line by line. The lab is two modules, specified in Exercises~\ref{c7:ex:6} and~\ref{c7:ex:7}:
+\code{qa_race}, which races a counter with and without a spinlock, and \code{qa_abba}, which takes
+two locks in both orders on a single thread so that lockdep objects. The exercises in
+\secref{c7:sec:exercises} end with the Cross-check: compute the expected counter by hand, measure it
+locked and unlocked, account for the difference, then find the iteration count at which the broken
+program is correct every time. The lab is done when \code{make test L=L07} reports
+\textbf{PASSED}, which includes producing a lockdep report on purpose.
+
+\input{chapters/07/concurrency_and_locks}
+\input{chapters/07/deadlock_and_lockdep}
+\input{chapters/07/summary}
+\input{chapters/07/exercises}

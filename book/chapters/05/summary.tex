@@ -1,0 +1,57 @@
+% Section 5.3, from lectures/L05/README.md: what you should be able to do afterwards, the
+% questions to test yourself, and the next lecture.
+
+\section{Review}
+\label{c5:sec:review}
+
+\needspace{6\baselineskip}
+\subsection*{What you should be able to do now}
+After this chapter, you should be able to:
+\begin{itemize}
+  \item Say what a major and a minor number each select, and find both for any node in \file{/dev}.
+  \item Write a \code{struct file_operations} and register it, both the long way and with
+    \code{misc_register}.
+  \item Explain the three separate things \code{copy_to_user} checks, and what goes wrong if you
+    skip it.
+  \item Say what \code{read()} must return when it has nothing to give, and why zero is the wrong
+    answer.
+  \item Choose the right \code{-Exxx} for a given failure and say what userspace will print for it.
+  \item Give one reason to add an \code{ioctl} and two reasons not to.
+  \item Write a ring buffer that survives its own wraparound, and prove it with a test rather than
+    by inspection.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Questions to test yourself}
+\begin{enumerate}
+  \item Two device nodes have the same major and different minors. What do they have in common?
+  \item Why is \code{copy_to_user} a function rather than a macro that expands to \code{memcpy}?
+  \item Your \code{read()} returns 0 whenever the buffer is empty. Describe what \code{cat
+    /dev/yours} does, and say why it is not what you wanted.
+  \item What does \code{open()} on your device return if you never implemented \code{open} in your
+    \code{file_operations}?
+  \item Where does the node in \file{/dev} come from, given that your driver only registered a
+    number?
+  \item A ring buffer passes every test except one about wraparound. What is almost certainly wrong
+    with it, and why did the other tests not catch it?
+\end{enumerate}
+
+\needspace{6\baselineskip}
+\subsection*{Where to look}
+\begin{itemize}
+  \item \file{lectures/L05/lab/qa_fifo.h} is the contract, printed in \secref{c5:app:b1}, and
+    \file{lectures/L05/lab/qa_fifo_kunit.c} is what checks it. Reading the suite before you start is
+    allowed and recommended; it is a specification written in a second language.
+  \item The suite tests nothing about concurrency, and says so at the top. That is
+    Chapter~\ref{c7:ch}.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Looking ahead}
+Chapter~\ref{c6:ch} is about:
+\begin{itemize}
+  \item Where a driver gets memory, and the flag that says which context you are in.
+  \item How a driver reaches its hardware, and why the compiler must not be trusted with it.
+  \item \code{ioremap}, \code{readl}, and the address you compute by hand before you map it.
+  \item The error path you write four times and then delete.
+\end{itemize}

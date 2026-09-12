@@ -1,0 +1,234 @@
+% Section 11.3, from lectures/L11/appendix/b_exercises.md.
+
+\section{Exercises}
+\label{c11:sec:exercises}\label{c11:app:b}
+
+\begin{aside}
+Nine, ending with the Cross-check. Do them in order; Exercise~\ref{c11:ex:6} onwards need the target
+running.
+
+Where an exercise can be checked mechanically, a \textbf{Check yourself} line says how.
+
+\textbf{Solutions.} The exercises that are not Code are answered in \secref{sol:sec:c11}. The Code
+exercises have no solution: each is checked by running it, as its Check yourself line says.
+\end{aside}
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{What a framework gives you}{Recall}
+\label{c11:ex:1}
+
+\xpart{a} Your Chapter~\ref{c9:ch} driver works and presents \file{/dev/qa_wait}. List five things
+it does not have that a subsystem would have provided.
+
+\xpart{b} State the trade a framework offers, in one sentence.
+
+\xpart{c} Name three separate costs of adding an \code{ioctl} of your own. One of them only appears
+on a particular kind of system; which, and what kind?
+
+\xpart{d} \code{ls /sys/bus/iio/devices} finds every IIO device on a machine. What is the equivalent
+command for finding every device that implements your own ioctl?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{The tour}{Recall}
+\label{c11:ex:2}
+
+For each device, name the subsystem or subsystems it belongs to.
+
+\xpart{a} A temperature sensor on an I2C bus.
+
+\xpart{b} A pin that drives an LED.
+
+\xpart{c} A hardware timer that resets the board if not kicked.
+
+\xpart{d} A rotary encoder a person turns.
+
+\xpart{e} A NAND flash chip.
+
+\xpart{f} A 16-bit ADC on SPI.
+
+\xpart{g} A crystal oscillator feeding three peripherals.
+
+Then:
+
+\xpart{h} Two of your answers are ``more than one subsystem''. Which, and why is that not a
+contradiction?
+
+\xpart{i} Which of the ten subsystems in \S\ref{c11:app:a3} presents \textbf{nothing} to userspace,
+and what is it for instead?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{Reading an IIO device}{Hand calculation}
+\label{c11:ex:3}
+
+A device exposes \code{in_voltage0_raw} and \code{in_voltage0_scale}. Reading them gives:
+
+\begin{console}
+in_voltage0_raw    = 2048
+in_voltage0_scale  = 0.805664
+\end{console}
+
+\xpart{a} What is the voltage? What are the units of \code{scale}, and how do you know?
+
+\xpart{b} Why does IIO split the value into a raw count and a scale, rather than having the driver
+report volts directly?
+
+\xpart{c} The driver adds \code{IIO_CHAN_INFO_OFFSET} and it reads \code{-100}. Recompute the
+voltage. In what order are raw, offset and scale applied?
+
+\xpart{d} Your device reports a plain counter with no physical meaning at all. Which of \code{raw},
+\code{scale} and \code{offset} should the driver implement, and what should it do about \code{type}?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{The pin that is not yet a GPIO}{Design}
+\label{c11:ex:4}
+
+\xpart{a} Before a pin can be driven as a GPIO, something must have multiplexed it as one rather
+than as a UART line. Which subsystem, and where is the configuration written?
+
+\xpart{b} Should your driver perform that multiplexing in \code{probe}? Give the reason.
+
+\xpart{c} Your device needs a clock enabled before its registers respond. Write the two calls, and
+say what happens if you instead write the SoC's clock gate register directly and a second driver
+shares that clock.
+
+\xpart{d} Your device has a regulator that must be on. Same question: what does the framework do
+that a direct register write does not?
+
+\xpart{e} All three of these are dependencies that may not be ready when your \code{probe} runs.
+What should \code{probe} return, and what does the core do with it?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{When a character device is right}{Design}
+\label{c11:ex:5}
+
+\xpart{a} Give a device that genuinely fits no subsystem, and say why.
+
+\xpart{b} For it, would you register the long way as in Chapter~\ref{c5:ch}, or use
+\code{misc_register}? Justify it.
+
+\xpart{c} You add two \code{ioctl}s. Write down what you now owe the people who use them, and for
+how long.
+
+\xpart{d} A colleague proposes an ioctl that returns a \code{struct} containing a \code{long} and a
+pointer. Name both problems.
+
+\xpart{e} State the difference between ``no subsystem fits'' and ``implementing a subsystem
+interface looked like more work''. Which is a reason and which is an excuse?
+
+% ------------------------------------------------------------------------------------------
+\exercise{Register with two frameworks}{Code}
+\label{c11:ex:6}
+
+Rewrite your Chapter~\ref{c10:ch} driver as \file{lectures/L11/lab/qa_frameworks.c}.
+
+\textbf{IIO:}
+\begin{itemize}
+  \item Allocate with \code{devm_iio_device_alloc}, sized for your private structure, and get it
+    back with \code{iio_priv}.
+  \item One channel: \code{IIO_VOLTAGE}, indexed, channel 0, with \code{IIO_CHAN_INFO_RAW}.
+  \item \code{read_raw} returns the most recent sample your interrupt handler stored, as
+    \code{IIO_VAL_INT}.
+  \item Name the device \code{qa_dev}, mode \code{INDIO_DIRECT_MODE}, and register with
+    \code{devm_iio_device_register}.
+\end{itemize}
+\textbf{GPIO:}
+\begin{itemize}
+  \item A \code{gpio_chip} with eight lines, labelled with \code{dev_name(&pdev->dev)}, \code{.base
+    = -1}, parented to your platform device.
+  \item \code{get}, \code{set}, \code{direction_input}, \code{direction_output} and
+    \code{get_direction}. Lines 0 to 3 are outputs; lines 4 to 7 are inputs wired back to them by
+    the hardware.
+  \item Register with \code{devm_gpiochip_add_data}.
+\end{itemize}
+\textbf{And no character device}: no \code{file_operations}, no \code{read}, no \code{poll} and no
+\file{/dev} node of your own, where your Chapter~\ref{c9:ch} driver had all four.
+
+\checkyourself \code{make test L=L11} reports \textbf{PASSED}, with twenty-two checks, of which
+eight come from a GPIO test program that contains no reference to your driver.
+
+\xpart{a} \code{devm_iio_device_alloc} allocates your private structure for you. Which call from
+your Chapter~\ref{c10:ch} driver does that replace, and why does the framework want to own the
+allocation?
+
+\xpart{b} Your module fails to load with \code{Unknown symbol devm_iio_device_alloc}. What is wrong, and
+what is the one command that fixes it? Why is IIO a module here at all?
+
+\xpart{c} \code{.base = -1}. What would happen on this target if you hardcoded 0 instead?
+
+% ------------------------------------------------------------------------------------------
+\exercise{Drive it with tools you did not write}{Code}
+\label{c11:ex:7}
+
+\xpart{a} Read \file{/sys/bus/iio/devices/iio:device0/name} and \code{in_voltage0_raw}. Which of
+these did you write code to create?
+
+\xpart{b} Find your gpiochip under \file{/sys/bus/gpio/devices/}. What is its parent, and what does
+its \code{of_node} symlink point at? Trace that path back to Chapter~\ref{c10:ch}.
+
+\xpart{c} Run the shipped \code{qa_gpio_test}. Read its source. Identify every line that would have
+to change if it were pointed at a completely different GPIO driver on different hardware.
+
+\xpart{d} \code{ls /sys/class/gpio} fails. Explain why that is correct rather than a missing
+feature, and name the config option and the chapter that decided it.
+
+\xpart{e} \code{libgpiod}'s \code{gpioinfo}, \code{gpioget} and \code{gpioset} are not on this
+target. Would they work if they were? What exactly would they be talking to?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{What you gave up}{Design}
+\label{c11:ex:8}
+
+\xpart{a} Your Chapter~\ref{c9:ch} driver could block a reader until data arrived. Can a program
+using \code{in_voltage0_raw} do that? What has been lost?
+
+\xpart{b} IIO has an answer to \textbf{a)}, which this lab does not implement. Find it in the kernel
+documentation and describe in two sentences what it provides and what a driver must add.
+
+\xpart{c} Name one thing about your driver that is now \emph{harder} than it was with a character
+device.
+
+\xpart{d} Name a device for which forcing it into IIO would produce worse code than a character
+device, and say what makes it a bad fit.
+
+\xpart{e} The GPIO character device is on its second version, \code{GPIO_V2_*}. What does that tell
+you about the claim that a framework removes the ABI problem? Restate the claim accurately.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent]{A sample rate measured through an interface that knows nothing about it}{Cross-check}
+\label{c11:ex:9}
+
+The device is in counter mode, so sample \emph{n} has the value \emph{n}. That makes the value
+readable through IIO a running total, and the difference between two reads a measurement of
+something the IIO interface has no concept of.
+
+\xpart{a} \textbf{Predict.} Your device is programmed with \code{PERIOD_NS=1000000}. Predict:
+\begin{itemize}
+  \item the value of \code{in_voltage0_raw} one second after the driver loads;
+  \item the difference between two reads taken one second apart;
+  \item what both would be at \code{period_ns=500000}.
+\end{itemize}
+
+\xpart{b} \textbf{Measure.} Read \code{in_voltage0_raw} twice, a second apart, and record both
+values and the difference. Do this three times.
+
+\xpart{c} \textbf{Reconcile.} Answer each:
+\begin{itemize}
+  \item The difference is not 1000. What is it, roughly, and where have you seen that number before?
+    Give the chapter and the effect.
+  \item Is the shortfall here the same as the one you measured in Chapter~\ref{c8:ch}, or has the
+    framework added something of its own? How would you tell?
+  \item You have measured a sample rate using an interface that exposes no rate, no timestamp and no
+    counter. What made that possible, and what would you have had to do instead if the device were
+    in \code{QA_DEV_MODE_NOISE}?
+\end{itemize}
+
+\xpart{d} \textbf{The reads are not free either.} Time a thousand reads of \code{in_voltage0_raw}
+from a shell loop and from a C program. Which is faster, by how much, and what does that tell you
+about the sysfs path as a way of moving samples?
+
+\xpart{e} From \textbf{d)}, state the sample rate above which reading \code{in_voltage0_raw} in a
+loop stops being a sensible way to get data out. What does IIO offer instead, and why does it exist?
+
+\xpart{f} A colleague reports ``the IIO driver only delivers 880 samples a second when the device is
+configured for 1000''. Rewrite that as an accurate sentence, naming which component each part of the
+shortfall belongs to and which parts you have actually measured rather than inferred.

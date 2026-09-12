@@ -1,0 +1,52 @@
+% Section 10.3, from lectures/L10/README.md: what you should be able to do afterwards, the
+% questions to test yourself, and the next lecture.
+
+\section{Review}
+\label{c10:sec:review}
+
+\needspace{6\baselineskip}
+\subsection*{What you should be able to do now}
+After this chapter, you should be able to:
+\begin{itemize}
+  \item Say what a bus is, in the device model's sense, without naming a physical bus.
+  \item Follow a device from its device tree node to the \code{probe} call that handled it.
+  \item Write a device tree node for a memory-mapped, interrupt-driven device.
+  \item Say how many cells a \code{reg} entry has, and where that number is declared.
+  \item Translate a child address through a \code{ranges} property.
+  \item Write a \code{platform_driver} with an \code{of_match_table} and no addresses in its source.
+  \item Explain the four steps between plugging in a device and its module being loaded.
+  \item Say what \code{remove} must undo, and why \code{devm_} changes the answer.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Questions to test yourself}
+\begin{enumerate}
+  \item Your driver's \code{probe} is never called. List, in order, the five things you would check.
+  \item \code{compatible} holds three strings. Which one does the kernel match on, and what are the
+    other two for?
+  \item A node has \code{reg = <0x1 0x2 0x3>}. Is that one region or an error? What do you need to
+    know to answer?
+  \item Why is \code{interrupts = <0 112 4>} meaningless without knowing the interrupt parent?
+  \item What is the difference between \code{probe} failing and \code{probe} deferring, and when
+    would you defer?
+  \item You unbind a driver from a device by writing to sysfs while a process holds the device node
+    open. What stops the memory being freed underneath it?
+\end{enumerate}
+
+\needspace{6\baselineskip}
+\subsection*{Where to look}
+\begin{itemize}
+  \item \file{tools/qa-dev/integrate.py} contains the code that generates \code{qa-dev}'s device
+    tree node inside QEMU, in the function \code{add_qa_dev_fdt_node}. It is short, and reading the
+    thing that \emph{writes} a node is an unusual and useful angle on reading nodes.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Looking ahead}
+Chapter~\ref{c11:ch} is about:
+\begin{itemize}
+  \item Why your driver should probably not be a character device at all.
+  \item What registering with a subsystem gives you, for free, that you have been writing by hand.
+  \item The \code{ioctl} you would invent, and the ABI you would then maintain forever.
+  \item Doing without a \file{/dev} node of your own, and getting something better in exchange.
+\end{itemize}

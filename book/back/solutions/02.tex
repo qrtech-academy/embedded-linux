@@ -1,0 +1,262 @@
+% Solutions to the Chapter 2 exercises that are not code, from lectures/L02/appendix/c_exercises.md.
+% Exercises 2.6 and 2.7 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 2: The Command Line, and the System Underneath It}
+\label{sol:sec:c2}
+Answers to the exercises in \secref{c2:sec:exercises}. Exercises~\ref{c2:ex:6} and~\ref{c2:ex:7}
+are Code, and are checked on the target: the first by \code{make test L=L02}, as its Check yourself
+line says, and the second by the machine itself.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c2:ex:1}{What the shell does and what it does not}{Recall}
+
+\xpart{a} The shell. Pathname expansion happens before \code{exec}, so the program receives the
+list of names in \code{argv} and never sees the \code{*}.
+
+\xpart{b} The program. To the shell \code{-l} is a word like any other; each program decides for
+itself what its options mean, which is why \code{-l} means ``long'' to \code{ls} and ``lines'' to
+\code{wc}.
+
+\xpart{c} The shell. It opens \file{out.txt} and \code{dup2}s it onto descriptor 1 before
+\code{exec}; the program writes to descriptor 1 as it always does and cannot tell.
+
+\xpart{d} The shell. \code{cd} is a builtin, because a child can change only its own directory and
+never its parent's (\secref{c2:app:a1}).
+
+\xpart{e} Whichever of them made the call that failed, and for a file named as an argument that is
+the program: \code{cat missing} gets \code{ENOENT} from its own \code{open} and prints the message
+itself. If the missing file is a redirection, \code{< missing}, the shell made the call and the
+shell reports it. The words are the C library's text for \code{ENOENT} either way.
+
+\xpart{f} The shell. Parameter expansion replaces \code{$HOME} with its value before the program
+starts, and the program receives the value.
+
+\textbf{Then:} a shell leaves a pattern that matches nothing as it is, so \code{grep} receives three
+arguments: \code{grep}, \code{foo}, and the literal \code{*.log}. It tries to open a file called
+\code{*.log}, fails, prints \code{grep: *.log: No such file or directory}, and exits with status 2,
+which means an error, as distinct from 1, which means no match. The message reads like a missing
+file, and it is the shell's expansion rule that made one. (Bash can be told otherwise, with
+\code{nullglob}; the default, and BusyBox's \code{ash}, pass the pattern through.)
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c2:ex:2}{Pipelines}{Recall}
+
+\xpart{a} Three processes, one for each stage, each forked by the shell and then \code{exec}'d, and
+two pipes, one between each pair of neighbours. Plumbing them takes four \code{dup2}s: \code{ps}'s
+output, \code{grep}'s input and output, and \code{wc}'s input.
+
+\xpart{b} \code{B} never sees end of file. A pipe's read end returns end of file only when every
+copy of the write end is closed, and the shell's copy keeps it open after \code{A} has finished and
+exited. So \code{B}'s \code{read} blocks forever, and the pipeline hangs, with the shell waiting for
+\code{B}. \code{B} is the process that suffers; \code{A} runs and exits normally.
+
+\xpart{c} The pipe's buffer is bounded, 64 KB, sixteen pages of 4 KB. \code{yes} writes until it is
+full and then blocks, so it can never hold more memory than that. \code{head} reads one line,
+prints it and exits, and then no process holds the read end open. \code{yes}'s next write raises
+\code{SIGPIPE}, whose default action is to terminate it, and it dies with status $128 + 13 = 141$
+(\secref{c2:app:a3}). Had it ignored \code{SIGPIPE}, the write would have failed with \code{EPIPE}
+instead, and a well-behaved \code{yes} would have exited on that.
+
+\xpart{d} A pipeline's exit status is its last stage's: \code{wc -l} ran perfectly well and printed
+0, so \code{$?} is 0 and \code{grep}'s 1 is lost (\secref{c2:app:a3}). Add \code{set -o pipefail},
+which makes a pipeline's status the last non-zero status among its stages; BusyBox's \code{ash}
+supports it. If the count is what you want, test it instead: \code{grep -c} or \code{grep -q} gives
+the answer without a pipeline at all.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c2:ex:3}{Reading \code{/proc/stat}}{Hand calculation}
+
+The interval is $6.40 - 3.90 = 2.50$ s, from the first field of \file{/proc/uptime}.
+
+\xpart{a} $1901 - 1626 = 275$ context switches in 2.50 s, so $275 / 2.50 = 110$ per second.
+
+\xpart{b} $71 - 63 = 8$ processes, so $8 / 2.50 = 3.2$ per second. \code{processes} counts forks
+since boot, so this is a fork rate.
+
+\xpart{c} $699 - 252 = 447$ units of \code{USER_HZ}, which is $447 / 100 = 4.47$ s. The unit is
+\code{USER_HZ}, 1/100 s, because \file{/proc/stat} reports CPU time in it whatever \code{CONFIG_HZ}
+is (\secref{c2:app:b2}); dividing by \code{HZ} instead, 250, would give 1.79 s, 2.5 times too small.
+\file{/proc/uptime}'s second field, which the kernel computes from the same idle time, agrees: it
+rose by $6.99 - 2.52 = 4.47$ s.
+
+\xpart{d} Two CPUs for 2.50 s is $2 \times 2.50 = 5.00$ s of CPU time, 500 units, and the ten fields
+of the \code{cpu} line, five of which are not zero, do rise by exactly that:
+\[
+(19 + 383 + 699 + 81 + 27) - (16 + 341 + 252 + 75 + 25) = 1209 - 709 = 500.
+\]
+Of it, 4.47 s was idle, $4.47 / 5.00 = 89.4\%$; the other 53 units are user 3, system 42, irq 6 and
+softirq 2. Yes, 4.47 s exceeds the 2.50 s interval, and it is not a mistake: the \code{cpu} line
+sums over both CPUs, so it can gather up to 5.00 s in 2.50 s. Per CPU, the idle time is
+$4.47 / 2 = 2.235$ s of the 2.50.
+
+\xpart{e} None of them. The CPU times are in \code{USER_HZ}, which is 100 whatever \code{CONFIG_HZ}
+is, so 447 units are still 4.47 s; \code{ctxt} and \code{processes} are plain counts; and the
+interval comes from \file{/proc/uptime}, in seconds. A kernel ticking at 1000 Hz behaves slightly
+differently, so the counts themselves could come out different on another run, but no step of the
+arithmetic involves \code{HZ}, and noticing that is the point of the question.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c2:ex:4}{Device numbers}{Hand calculation}
+
+\xpart{a} It tells you that one driver handles both: major 1, which \file{/proc/devices} lists as
+\code{mem}. Minors 3 and 5 are two devices of that driver's, which it tells apart by minor. It does
+not tell you what either device does, which is decided by the driver's code and not by the numbers;
+nor that the two share anything beyond the driver; nor that any driver is registered at all, which
+only \file{/proc/devices} or opening the node can tell you.
+
+\xpart{b} The tty core, \file{drivers/tty/tty_io.c}. The excerpt lists major 5 as \code{/dev/tty};
+the full \file{/proc/devices} lists it three times, as \code{/dev/tty}, \code{/dev/console} and
+\code{/dev/ptmx}, because the tty core registers each of minors 0, 1 and 2 separately. Minor 1 is
+the console, and it is an indirection rather than a device of its own: opening it opens whichever
+tty the kernel's console is on, here the PL011 UART's \file{ttyAMA0}, named by \code{console=ttyAMA0}
+on the command line (\secref{c2:app:b2}).
+
+\xpart{c} The \code{mknod} succeeds: it writes a directory entry holding \code{c}, 204 and 64, and
+consults no driver. Opening the node succeeds as well, because major 204 is claimed by the PL011
+driver, \code{ttyAMA}, and minor 64 is its first port: \file{/dev/spare} is a second name for
+\file{/dev/ttyAMA0}, the console you are typing on. They are not the same question. The first is
+about the filesystem, and the second is about whether a driver has registered the number
+(\secref{c2:app:b5}); here both answers happen to be yes.
+
+\xpart{d} The \code{mknod} succeeds, for the same reason. Opening it fails with \code{ENXIO}, ``No
+such device or address'', because no driver has registered major 42 (\secref{c2:app:b5}). Here the
+answers differ, which is what makes them two questions.
+
+\xpart{e} What is gone is one directory entry in devtmpfs: the name. The \code{mem} driver and its
+minor 3 are still registered, any process that already had \file{/dev/null} open goes on using it,
+and \code{mknod /dev/null c 1 3} with a \code{chmod 666} gives the device its name back. Until then
+the loss is worse than it sounds: the next \code{> /dev/null} a root shell runs creates a regular
+file of that name, which then collects everything that was meant to be thrown away.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c2:ex:5}{Which file answers the question}{Design}
+
+\xpart{a} \file{/proc/version}, whose \code{SMP PREEMPT} names the model the running kernel was
+built with (\secref{c2:app:b2}). The obvious alternative, the \code{.config} on the build machine,
+describes whatever you built last, which need not be what is running; \file{/proc/config.gz} is
+exact, but exists only on a kernel built with \code{CONFIG_IKCONFIG_PROC}, as this one happens to
+be.
+
+\xpart{b} \file{/sys/devices/system/cpu/online}, which holds one value, a list of ranges such as
+\code{0-1}, generated from the kernel's own mask of online CPUs. The obvious alternative, counting
+the \code{processor} lines in \file{/proc/cpuinfo}, depends on a format written for people and
+different on every architecture; it works on arm64, which is why the lab's test uses it, and an
+answer that chooses it has to argue that portability does not matter.
+
+\xpart{c} \file{/proc/cmdline}, exactly what the kernel was given. The alternative, the
+\code{Kernel command line:} line in \code{dmesg}, lives in a ring buffer that a machine that has been
+up long enough has overwritten.
+
+\xpart{d} \file{/proc/interrupts}: the \code{arch_timer} row, in the \code{CPU1} column, which is one
+count per CPU per interrupt source. The alternative, the \code{intr} line of \file{/proc/stat},
+holds one total per interrupt number summed over every CPU, with no names, so it cannot answer the
+question at all.
+
+\xpart{e} \file{/proc/iomem}, read as root: the physical address map as a tree, with each region a
+driver has claimed nested under the device's own region with the claimant's name. Read as anyone
+else, every address in it is zero. The alternative, the \code{reg} properties under
+\file{/sys/firmware/devicetree/base}, says where devices are, not whether any driver has claimed
+them: \code{qa-dev}'s node is there from the first boot, and no driver claims it until
+Chapter~\ref{c6:ch}.
+
+\xpart{f} \file{/proc/1/comm}, the name the kernel keeps for PID 1. While \file{/init} runs it is
+\code{init}, and at a \code{make boot} prompt it is \code{sh}, because the script has
+\code{exec}'d \file{/bin/sh} and PID 1 is now the shell. The alternatives are worse:
+\file{/proc/1/cmdline} holds the argument vector, which for a script names the interpreter,
+\code{/bin/sh /init}, and which a program can rewrite; and \file{/proc/1/exe} points at
+\file{/bin/busybox}, as it does for every process on this target.
+
+\xpart{g} \file{/proc/56/fd/}: one symbolic link per open descriptor, named by its number and
+pointing at what is open, so \code{ls -l /proc/56/fd} answers it, and \file{/proc/56/fdinfo/}
+adds each one's offset and flags. The alternative is \code{lsof}, which is a program that reads
+exactly this directory and formats it; BusyBox's is much reduced, and on a target without it the
+directory is still there.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c2:ex:8}{What a two-megabyte userland costs you}{Design}
+
+\xpart{a} \code{ls -l /bin/busybox} gives 2,108,608 bytes and \code{busybox --list | wc -l} gives
+402 (\secref{c2:app:a8}). The average is $2{,}108{,}608 / 402 \approx 5{,}245$ bytes, about 5 KB per
+command. It is misleading three ways. The applets are nothing like equal: \code{ash}, \code{awk} and
+\code{vi} are large, and \code{true} and \code{yes} are a few lines. Most of the binary is shared,
+BusyBox's own library and the statically linked C library that every applet uses, so no applet costs
+5 KB, and removing half of them would shrink the file by much less than half. And it invites a
+comparison with coreutils, about 5 MB for about 100 commands, roughly 50 KB each, that compares
+different amounts of function, because BusyBox's applets take fewer options.
+
+\xpart{b} \code{busybox --list | grep -x} and the name prints nothing for four of the five.
+\code{strace}, \code{ss} and \code{vmstat}: absent, because no BusyBox applet exists. Each is a
+separate program, from strace, iproute2 and procps respectively, that could be cross-compiled and
+installed. \code{lsof}: present, a BusyBox applet. \code{journalctl}: absent for the other reason:
+it belongs to systemd, this system has no systemd, and so there is no journal for it to read.
+
+\xpart{c} Read \file{/proc} directly, which is what \code{lsof} does anyway (\secref{c2:app:b3}).
+Find the process's PID with \code{ps}; \code{ls -l /proc/PID/fd} lists one symbolic link per open
+descriptor, with what it points at; \file{/proc/PID/fdinfo/N} gives each one's position and flags;
+\file{/proc/PID/maps} shows the files it has mapped, which are not descriptors; and \file{cwd} and
+\file{exe} are its working directory and its binary.
+
+\xpart{d} A difference in behaviour between the BusyBox applet you ship and the GNU tool you develop
+against, which a script relies on without knowing, and the silent kind is the worst. The course's
+example is \code{rmmod}: BusyBox's returns success even when the kernel refused to unload the
+module, so a test that checks its exit status passes on a laptop and lies on the target, and
+Chapter~\ref{c4:ch}'s lab checks \code{lsmod} instead (\secref{c2:app:a8}).
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c2:ex:9}{A rate measured three ways}{Cross-check}
+
+\xpart{a} The rate is the difference between the two \code{ctxt} readings divided by the difference
+between the two first fields of \file{/proc/uptime}. The numbers are yours. Divide by the uptime
+difference rather than by the pause on your watch: the uptimes time the reads, and the watch times
+you.
+
+\xpart{d}
+\begin{itemize}
+  \item \textbf{The spread} is yours to compute, and whatever it is, \code{ctxt-per-s} is a
+    property of the moment. \code{ctxt} counts every switch on both CPUs, and on an idle target that
+    is dominated by whatever happened to run in that second: the kernel's housekeeping, the serial
+    console echoing what you type, and the script's own processes. Two runs a second apart measure
+    two different seconds.
+  \item \textbf{The digits.} The interval comes from \file{/proc/uptime}, which counts in 10 ms
+    steps, so a one-second interval is known to about 1\%, and a count of some tens of switches
+    moves by one or two percent when one more lands inside it. The run-to-run spread from c) is the real
+    uncertainty, and it is far larger than the digit after the point. An honest presentation is a
+    whole number, or a range from several runs, stated with the interval and the conditions:
+    ``about so many per second, idle, over one second, on QEMU''.
+  \item \textbf{Hand against script.} Expect the longer interval to be steadier: it averages bursts
+    over more time, and the fixed errors, the 10 ms steps and the switches the reading commands
+    cause, are a smaller fraction of it. One reason it may not hold: during a hand-timed pause you
+    type the second command, and every keystroke on the serial console is an interrupt and a
+    wake-up of the shell, so the hand figure includes you.
+  \item \textbf{Without the \code{sleep}.} The rate rises, and stops describing the machine. The
+    switches the script itself causes between its two samples, forking \code{cut} and \code{awk},
+    their \code{exec}s, their exits and the shell's \code{wait}s, are about the same number
+    whatever the interval, so dividing them by 0.14 s instead of about 1 s inflates them roughly
+    sevenfold, and they swamp the background. The interval is also only 14 steps of
+    \file{/proc/uptime}, so it is uncertain by up to 10 ms in 140, about 7\%. A short interval is
+    worse, not better, because a rate is an average over the interval, and there is no ``now'' to
+    get closer to: context switches are discrete events, and a rate at an instant does not exist.
+\end{itemize}
+
+\xpart{e} \code{vmstat} is not there: the shell says \code{sh: vmstat: not found}, and the status
+is 127. That tells you the userland is BusyBox and nothing else: there is no procps, and BusyBox has
+no \code{vmstat} applet (\secref{c2:app:a8}). To check the answer without it, use the number
+BusyBox does have under another name: \code{nmeter '\%x'} prints the context-switch rate once a
+second, computed from the same \code{ctxt} counter, and \code{nmeter} is in this build. Your hand
+figure from a) is a second, independent check, the same counter read by a different route; and
+running your script on the host, beside the \code{vmstat} there, checks the method rather than the
+number.
+
+\xpart{f} Any two of these:
+\begin{itemize}
+  \item \textbf{It is a property of a moment, not of the machine.} It is one sample of an idle
+    target, dominated by whatever ran in that second, including the measurement itself. Under any
+    load, or a second later, it is different, and a datasheet figure has to say under what load and
+    by what method it was measured.
+  \item \textbf{Its precision is invented.} Three significant figures from a one-second sample whose
+    interval is known to 10 ms and whose run-to-run spread is far larger than 0.1 per second; one or
+    two significant figures at most.
+  \item \textbf{It describes an emulation.} The target is QEMU on some host, and the rate depends
+    on that host's speed and load, and on this kernel's configuration; it says nothing about an ARM
+    board running the same software.
+\end{itemize}

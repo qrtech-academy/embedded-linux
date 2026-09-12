@@ -1,0 +1,311 @@
+% Section 2.1, from lectures/L02/appendix/a_shell_and_processes.md.
+
+\section{The Shell, the Process Tree, and Where Things Live}
+\label{c2:app:a}
+
+This section is the first half of this chapter's material: what the shell actually is, what
+it asks the kernel to do when you type a pipeline, how processes relate to one another, and what the
+filesystem hierarchy is for. The second half, the three pseudo-filesystems through which all of this
+is visible, is \S\ref{c2:app:b}.
+
+The framing for the whole chapter is worth stating once. \textbf{Every command you type is a
+question you are asking the kernel, or an instruction you are giving it.} The shell is not part of
+the kernel and has no special powers; it is an ordinary program that makes the same system calls
+your own programs make. Once that is genuinely believed rather than merely accepted, most of the
+command line stops needing to be memorised.
+
+\subsection{The shell is an ordinary program}
+\label{c2:app:a1}
+
+\file{/bin/sh} on the target is a symlink to BusyBox, which is a normal ELF binary with no
+privileges of any kind. It reads a line, works out what you meant, and makes system calls. That is
+all.
+
+The consequence people find surprising is that \textbf{most of what a shell appears to do is not
+done by the shell at all}. Wildcards are expanded by the shell before the program ever runs, so
+\code{rm *} hands \code{rm} a list of filenames and \code{rm} never sees a \code{*}. Redirection is
+done by the shell before \code{exec}, so a program has no idea its output is going to a file. And
+the program you ran received none of the syntax: by the time \code{main} starts, \code{argv} holds
+the expanded, redirection-free result.
+
+There is a short list of things the shell \emph{must} do itself, and the list is short for one
+reason: they change the shell's own state, and a child process cannot change its parent. \code{cd}
+is the canonical example. If \code{cd} were a program in \file{/bin}, the shell would fork, the
+child would change \emph{its} directory, and the child would exit. Nothing would have happened. So
+\code{cd} is built in, and so are \code{export}, \code{exit}, \code{umask} and a handful of others.
+
+\begin{console}
+$ type cd
+cd is a shell builtin
+\end{console}
+
+\subsection{What a pipeline actually is}
+\label{c2:app:a2}
+
+\code{ps | grep sh | wc -l} looks like one thing. It is three processes, two pipes, and a specific
+sequence of system calls. This is the single most useful thing in the chapter to have drawn.
+
+A \textbf{pipe} is a kernel object with two file descriptors: one you write to, one you read from.
+\code{pipe()} creates it. It has no name and no presence in the filesystem.
+
+A process gets a new program by \textbf{forking} and then \textbf{exec'ing}: \code{fork()} produces
+a copy of the current process, and \code{exec()} replaces that copy's program while keeping its file
+descriptors. That last clause is what makes everything work. File descriptors survive \code{exec},
+so the shell can arrange a child's descriptors \emph{before} the child becomes the program it will
+run, and the program starts life already plumbed.
+
+For the two-stage pipeline \code{A | B}:
+
+\begin{console}
+  shell
+    |
+    +-- pipe()             creates fds [r, w]
+    |
+    +-- fork() ------------> child A
+    |                          dup2(w, 1)      stdout now writes into the pipe
+    |                          close(r); close(w)
+    |                          exec("A")       A starts, unaware of any of this
+    |
+    +-- fork() ------------> child B
+    |                          dup2(r, 0)      stdin now reads from the pipe
+    |                          close(r); close(w)
+    |                          exec("B")
+    |
+    +-- close(r); close(w)   the shell must close its own copies
+    +-- wait() for both
+\end{console}
+
+\noindent \textbf{The closes are not tidiness.} A pipe's read end returns end-of-file only when
+\emph{every} copy of the write end is closed. If the shell keeps its copy open, \code{B} waits
+forever for an EOF that never comes, and the pipeline hangs. This is the most common bug in
+hand-written pipeline code and it is worth knowing before you write any.
+
+Two consequences follow that explain things people find odd:
+\begin{itemize}
+  \item \textbf{The stages run concurrently, not in sequence.} \code{A} is not finished when
+    \code{B} starts. A pipeline reading a huge file starts producing output immediately.
+  \item \textbf{The pipe has a fixed-size buffer}, 64 KB by default. When it fills, the writer
+    blocks. That is the entire flow-control mechanism, and it is why \code{yes | head -1} never fills
+    memory. What ends it is the reader leaving: once \code{head} exits, nothing holds the read end
+    open, and \code{yes}'s next write kills it with \code{SIGPIPE}.
+\end{itemize}
+
+\subsection{Exit status, and how the shell knows what happened}
+\label{c2:app:a3}
+
+Every process returns one byte to its parent. Zero means success and anything else does not;
+\code{$?} holds the last one.
+
+\begin{console}
+$ true; echo $?
+0
+$ false; echo $?
+1
+\end{console}
+
+\noindent That single byte is the entire contract between a program and a script, and it is why
+\code{command && next} and \code{command || fallback} work. In a pipeline, \code{$?} is the status
+of the \emph{last} stage only, which means \code{grep foo file | wc -l} reports success even when
+\code{grep} found nothing. This bites people writing CI scripts, and the fix is \code{set -o
+pipefail}, which this repository's own scripts use for exactly that reason.
+
+\textbf{A signal is reported differently.} A process killed by signal N reports as \code{128 + N},
+so a program killed by \code{SIGKILL} (9) gives 137. That number appears in \file{ci/test.sh}, which
+uses it to tell a target that hung from a target whose tests failed.
+
+\subsection{The filesystem hierarchy, honestly}
+\label{c2:app:a4}
+
+The layout is conventional rather than enforced; the kernel cares about almost none of it.
+
+\begin{booktable}{@{}l>{\hsize=0.85\hsize}L>{\hsize=1.15\hsize}L@{}}
+  \thead{Path} & \thead{Holds} & \thead{Notes} \\
+  \midrule
+  \code{/bin} & Essential user commands & On most systems now a symlink to \code{/usr/bin} \\
+  \code{/sbin} & Essential system commands & Same \\
+  \code{/lib} & Shared libraries and kernel modules & \code{/lib/modules/$(uname -r)/} \\
+  \code{/etc} & Configuration, text, machine-local & Never binaries \\
+  \code{/dev} & Device nodes & Populated by devtmpfs, see \S\ref{c2:app:b5} \\
+  \code{/proc} & Process and kernel information & Not files, see \S\ref{c2:app:b1} \\
+  \code{/sys} & The driver model & Not files either, see \S\ref{c2:app:b4} \\
+  \code{/tmp} & Scratch, usually cleared at boot &  \\
+  \code{/var} & State that changes: logs, spools & The part of the tree you cannot mount read-only \\
+  \code{/usr} & Everything not needed to boot & Historically a separate partition \\
+  \code{/root} & Root's home directory & Not \code{/} \\
+\end{booktable}
+
+\noindent The \file{/bin} against \file{/usr/bin} split is worth ninety seconds because people
+assume it encodes a principle. It does not. In 1971 the Unix authors filled a disk, mounted a second
+one at \file{/usr}, and moved the overflow there; the split has been rationalised ever since. Modern
+distributions have merged them back, and \file{/bin} is a symlink.
+
+\textbf{What matters for embedded} is which directories must exist before \code{init} runs, and the
+answer is short: mount points for whatever you intend to mount, and the path named by
+\code{rdinit=}. Our own root filesystem creates \file{/proc}, \file{/sys}, \file{/dev}, \file{/tmp},
+\file{/lab} and \file{/root} as empty directories in \file{ci/rootfs.sh}, and that is genuinely all
+that is needed. An empty directory is required because \textbf{mounting onto a path that does not
+exist fails}, and \file{/init} mounting \file{/proc} is one of the first things that happens.
+
+\subsection{Processes: the tree, and the states}
+\label{c2:app:a5}
+
+Every process except PID 1 has a parent, so processes form a tree.
+
+\begin{console}
+$ ps -o pid,ppid,stat,comm
+  PID  PPID STAT COMMAND
+    1     0 S    init
+   56     1 S    run.sh
+   70    56 R    ps
+\end{console}
+
+\noindent \code{STAT} is the state, and four of them matter:
+
+\begin{booktable}{@{}lLl@{}}
+  \thead{State} & \thead{Means} & \thead{Consumes CPU} \\
+  \midrule
+  \code{R} & Running, or ready to run and waiting for a CPU & Yes \\
+  \code{S} & Interruptible sleep: waiting for something, killable & No \\
+  \code{D} & Uninterruptible sleep: usually waiting on I/O & No \\
+  \code{Z} & Zombie: exited, but its parent has not collected it & No \\
+\end{booktable}
+
+\noindent \textbf{\code{D} is the one that alarms people.} A process in \code{D} cannot be killed,
+not even with signal 9, because it is inside a system call that is not at a point where a signal can
+be delivered. It is almost always waiting for hardware. If it is stuck there permanently, something
+below it is broken, and the process is a symptom rather than the problem.
+
+\textbf{A zombie is not a leak of anything except a process ID.} When a process exits, its memory is
+freed immediately, but its exit status has to be kept until its parent asks for it with
+\code{wait()}. That retained status is the zombie. A parent that never calls \code{wait()}
+accumulates them, and the fix is always in the parent.
+
+\textbf{An orphan is different and is not a problem.} If a parent exits first, its children are
+re-parented to PID 1, which is expected to \code{wait()} for them. That is the mechanism by which
+daemons end up owned by init, and it is why \code{PPID} of \code{1} is normal rather than
+suspicious.
+
+\subsection{Signals}
+\label{c2:app:a6}
+
+A signal is a number delivered to a process, which either has a handler for it, or gets the default
+behaviour.
+
+\begin{booktable}{@{}lr>{\hsize=0.52\hsize}L>{\hsize=1.48\hsize}L@{}}
+  \thead{Signal} & \thead{Number} & \thead{Default} & \thead{Catchable} \\
+  \midrule
+  \code{SIGINT} & 2 & Terminate & Yes. This is Ctrl-C \\
+  \code{SIGKILL} & 9 & Terminate & \textbf{No} \\
+  \code{SIGSEGV} & 11 & Terminate and dump & Yes \\
+  \code{SIGTERM} & 15 & Terminate & Yes. The polite one, and what \code{kill} sends by default \\
+  \code{SIGSTOP} & 19 & Stop & \textbf{No} \\
+  \code{SIGCHLD} & 17 & Ignore & Yes. Sent to a parent when a child exits \\
+\end{booktable}
+
+\noindent \code{SIGKILL} and \code{SIGSTOP} cannot be caught, blocked or ignored, which is what
+makes them the last resort. Everything else can be handled, and a program that handles
+\code{SIGTERM} to flush its state before exiting is a program that behaves correctly when the system
+shuts down.
+
+The relevance to the rest of this course is that \textbf{a driver's blocking \code{read()} has to
+cope with a signal arriving while it waits.} That is Chapter~\ref{c9:ch}'s subject, and the reason a
+user pressing Ctrl-C expects something to happen is this table.
+
+\subsection{PID 1, and two ways it is not an ordinary process}
+\label{c2:app:a7}
+
+PID 1 is the first userspace program the kernel starts, named by \code{rdinit=} or \code{init=} on
+the kernel command line, or found at one of a few default paths. On our target it is
+\file{tools/target/init}, which is a shell script.
+
+It is special in exactly two ways, and both are worth demonstrating.
+
+\textbf{It is immune to signals it has not handled.} The kernel discards any signal sent to PID 1
+for which PID 1 has installed no handler, including \code{SIGKILL}. So:
+
+\begin{console}
+# kill -9 1
+# echo "still here"
+still here
+\end{console}
+
+\noindent Nothing happens. No error, no message, no dead system. This surprises nearly everyone, and
+it is the reason ``just kill init'' is not how you shut a machine down. The rule exists because the
+kernel cannot function without PID 1, so it refuses to let anything remove it by accident.
+
+\textbf{It may not exit.} The one thing PID 1 must never do is return. If it does, the kernel stops
+immediately:
+
+\begin{console}
+init: I am PID 1, and I am about to exit
+[    3.183995] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000
+\end{console}
+
+\noindent That is what a real init's infinite loop is for, and it is why \file{tools/target/init}
+ends in either \code{exec /bin/sh} or \code{poweroff -f} and never simply falls off the end.
+\textbf{A script that runs to completion as PID 1 panics the machine}, which is a memorable way to
+discover you forgot the last line.
+
+The pair together is the point. You cannot kill init, and init must not leave.
+
+\subsection{BusyBox, measured}
+\label{c2:app:a8}
+
+The entire userland of this target is one binary. Not one binary per command; one binary:
+
+\begin{console}
+# ls -l /bin/busybox
+-rwxr-xr-x    1 root     root       2108608 ... /bin/busybox
+# busybox --list | wc -l
+402
+\end{console}
+
+\noindent \textbf{402 commands in 2,108,608 bytes}, statically linked, with no libc alongside it.
+Every command in \file{/bin} is a symlink to that one file, and BusyBox decides what to do by
+looking at \code{argv[0]}.
+
+\begin{console}
+# ls -l /bin/ls
+lrwxrwxrwx    1 root     root            12 ... /bin/ls -> /bin/busybox
+\end{console}
+
+\noindent Compare against a desktop: GNU coreutils alone is around 5 MB for roughly 100 commands,
+before libc, and a full \file{/usr/bin} is hundreds of megabytes. The ratio is not subtle.
+
+\textbf{What it costs is real and specific, and comes in three kinds.}
+
+\emph{Missing applets.} Some tools simply are not there. On this target:
+
+\begin{booktable}{@{}llL@{}}
+  \thead{Tool} & \thead{Present} & \thead{Why} \\
+  \midrule
+  \code{dmesg} & Yes & BusyBox applet \\
+  \code{ps}, \code{top} & Yes & BusyBox applets, with fewer options than the ones you know \\
+  \code{lsof} & Yes & BusyBox applet, and much reduced: it lists fds and little else \\
+  \code{free} & Yes & BusyBox applet \\
+  \code{strace} & \textbf{No} & Not a BusyBox applet at all; it is a separate program \\
+  \code{ss} & \textbf{No} & Same \\
+  \code{vmstat} & \textbf{No} & Same \\
+  \code{journalctl} & \textbf{No} & It is systemd's, and this system has no systemd \\
+\end{booktable}
+
+\noindent Check for yourself with \code{busybox --list | grep -x vmstat}, which prints nothing.
+
+The last two rows are two different absences and it is worth keeping them apart. \code{strace},
+\code{ss} and \code{vmstat} are absent because nobody wrote a BusyBox applet for them and you could
+cross-compile and install one. \code{journalctl} is absent because it is part of a different init
+system; there is nothing to install, because there is no journal.
+
+\emph{Reduced options.} \code{busybox find} has no \code{-printf}. \code{busybox ps} does not take
+most of the flags you know. The applet is there and the flag is not, which is the more annoying
+failure because it shows up halfway through a script.
+
+\emph{Different behaviour.} The worst kind, because it is silent. This course has already been
+bitten by one: \textbf{BusyBox's \code{rmmod} returns success even when the kernel refused to unload
+the module}, which is why Chapter~\ref{c4:ch}'s lab checks whether the module is still loaded
+instead of checking an exit status. A test written against coreutils behaviour passes on your laptop
+and lies on the target.
+
+The engineering summary is that BusyBox is what you ship and coreutils is what you develop against,
+and the difference between them is a category of bug that only appears on the target. Test scripts
+on the target, not on your laptop.

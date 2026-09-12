@@ -1,0 +1,246 @@
+% Section 9.4, from lectures/L09/appendix/c_exercises.md.
+
+\section{Exercises}
+\label{c9:sec:exercises}\label{c9:app:c}
+
+\begin{aside}
+Nine, ending with the Cross-check. Do them in order; Exercise~\ref{c9:ex:6} onwards need the target
+running.
+
+Where an exercise can be checked mechanically, a \textbf{Check yourself} line says how.
+
+\textbf{Solutions.} The exercises that are not Code are answered in \secref{sol:sec:c9}. The Code
+exercises have no solution: each is checked by running it, as its Check yourself line says.
+\end{aside}
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{Sleeping and spinning}{Recall}
+\label{c9:ex:1}
+
+\xpart{a} A task is sleeping and another is spinning on a flag. For each, say what state it is in,
+whether it is on the run queue, and what it costs.
+
+\xpart{b} Why can a task in \code{TASK_UNINTERRUPTIBLE} not be killed with signal 9? What is it
+usually waiting for, and what does its presence in \code{ps} output tell you?
+
+\xpart{c} Which of the two sleeping states should a driver use, and why essentially always?
+
+\xpart{d} \code{schedule()} is called by the incorrect versions in \secref{c9:app:a2} and by the
+correct one in \secref{c9:app:a3}. What else has to happen for it to be a sleep rather than a
+yield?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{The lost wakeup}{Recall}
+\label{c9:ex:2}
+
+The second version from \secref{c9:app:a2}, with the reader already on the queue the handler wakes:
+
+\begin{ccode}
+if (fifo_empty()) {
+        set_current_state(TASK_INTERRUPTIBLE);
+        schedule();
+}
+\end{ccode}
+
+\xpart{a} Write out the interleaving that loses the wakeup. Be precise about where the interrupt
+lands.
+
+\xpart{b} How wide is the window, in instructions? Given a device interrupting every millisecond,
+roughly how long before you hit it?
+
+\xpart{c} Which line of \code{___wait_event}'s expansion closes it? Quote it.
+
+\xpart{d} \code{wait_event_interruptible} takes a \textbf{condition}, not a variable. Give two
+separate reasons, one about the lost wakeup and one about what happens after a wake.
+
+\xpart{e} The condition is evaluated many times. What two properties must it therefore have?
+
+\xpart{f} A colleague argues the bug is rare because the window is two instructions. What is wrong
+with that reasoning?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{Jiffies}{Hand calculation}
+\label{c9:ex:3}
+
+This kernel is \code{HZ=250}.
+
+\xpart{a} How long is a jiffy, in microseconds?
+
+\xpart{b} \code{msecs_to_jiffies(1)}, \code{msecs_to_jiffies(4)}, \code{msecs_to_jiffies(10)}: give
+all three. Does it round up or down, and why does that choice matter?
+
+\xpart{c} \code{msleep} sleeps for at least \code{msecs_to_jiffies(n)} jiffies and in practice one
+more. Predict the measured duration of \code{msleep(1)}, \code{msleep(4)} and \code{msleep(10)}.
+
+\xpart{d} Two of those three are the same number. Which, and what does that mean for a driver that
+calls \code{msleep(1)} in a loop expecting a millisecond each time?
+
+\xpart{e} The same driver is rebuilt on a \code{HZ=1000} kernel. Recompute all three.
+
+\xpart{f} \code{jiffies} is compared with \code{time_after} rather than \code{>}. What goes wrong
+with \code{>}, and how often, on a 32-bit counter at \code{HZ=250}?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{Choosing a delay}{Hand calculation}
+\label{c9:ex:4}
+
+For each, choose \code{udelay}, \code{usleep_range}, \code{msleep}, or a timer, and justify it in
+one sentence.
+
+\xpart{a} A hardware register needs 2 us to settle, inside a spinlock.
+
+\xpart{b} Polling a status bit that takes about 500 us, in \code{probe}.
+
+\xpart{c} Retrying a failed transfer in 100 ms.
+
+\xpart{d} Waiting 5 ms in a hard interrupt handler.
+
+\xpart{e} Giving up on a device that has not responded within 2 seconds.
+
+\xpart{f} Waiting 50 us in process context, as accurately as possible.
+
+Then: \textbf{g)} one of the six is a trick. Which, and what is the right answer?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{The four cases of \code{read}}{Design}
+\label{c9:ex:5}
+
+Your driver's \code{read} faces four situations. For each, give the return value and say what the
+calling program observes.
+
+\xpart{a} 40 samples available, 100 requested.
+
+\xpart{b} Nothing available, descriptor is blocking.
+
+\xpart{c} Nothing available, descriptor has \code{O_NONBLOCK}.
+
+\xpart{d} Nothing available, blocking, and the user presses Ctrl-C.
+
+Then:
+
+\xpart{e} For \textbf{b)}, Chapter~\ref{c5:ch} returned \code{-EAGAIN} and this chapter blocks
+instead. What changed, and why was \code{-EAGAIN} the right answer then?
+
+\xpart{f} For \textbf{d)}, what happens if you return \code{-EINTR} instead of \code{-ERESTARTSYS}?
+What if you ignore the return value of \code{wait_event_interruptible} entirely?
+
+\xpart{g} What does returning 0 mean, and name a program that would silently do the wrong thing.
+
+% ------------------------------------------------------------------------------------------
+\exercise{Block until there is data}{Code}
+\label{c9:ex:6}
+
+Write \file{lectures/L09/lab/qa_wait.c}. Start from your Chapter~\ref{c8:ch} driver and add a
+character device.
+\begin{itemize}
+  \item Keep the interrupt handler from Chapter~\ref{c8:ch}, but have it copy samples into a
+    driver-side FIFO of 256 entries under a spinlock, and call \code{wake_up_interruptible} when it
+    added anything.
+  \item Add \file{/dev/qa_wait}, registered the long way as in Chapter~\ref{c5:ch}.
+  \item \code{read} returns whole samples. Empty and blocking: wait. Empty and \code{O_NONBLOCK}:
+    \code{-EAGAIN}. Interrupted: \code{-ERESTARTSYS}.
+  \item Implement \code{poll}.
+  \item Take a \code{period_ns} parameter; \textbf{zero means create the device but leave it
+    stopped}, which is how the tests reach the idle-device cases.
+\end{itemize}
+
+\checkyourself \code{make test L=L09} reports \textbf{PASSED}, with eighteen checks in total: ten
+from the harness and eight from the userspace tester across its two modes. The shipped
+\code{qa_wait_test} exercises both a running and a stopped device.
+
+\xpart{a} You will be tempted to hold the spinlock across \code{wait_event_interruptible}. What
+happens, and which config option this course enables tells you?
+
+\xpart{b} Name your wait queue \code{readq} and try to build. Quote the error and explain it.
+
+\xpart{c} With the device running, drain the device and time the next \code{read}. How long did it
+block, and what woke it?
+
+% ------------------------------------------------------------------------------------------
+\exercise{Measure the sleeps}{Code}
+\label{c9:ex:7}
+
+Write \file{lectures/L09/lab/qa_timing.c}. It must print \code{HZ} and the jiffy length, then
+measure the average duration of \code{msleep(1)}, \code{msleep(4)}, \code{msleep(10)},
+\code{usleep_range(1000, 1000)}, \code{usleep_range(100, 100)} and \code{udelay(100)} over a
+configurable number of repetitions, using \code{ktime_get}.
+
+\checkyourself \code{msleep(1)} and \code{msleep(4)} come out within a few hundred microseconds of
+each other, and \code{usleep_range(1000)} comes out below one jiffy.
+
+\xpart{a} Why \code{ktime_get} and not \code{ktime_get_real}?
+
+\xpart{b} \code{udelay(100)} measures about 112 us and \code{usleep_range(100)} about 307 us.
+Explain both the ordering and the gap.
+
+\xpart{c} Your module measures \code{msleep} by calling it 200 times in a loop. Name one thing that
+measures which a single call would not, and one thing it hides.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{A timer instead of an interrupt}{Design}
+\label{c9:ex:8}
+
+Your driver gets its data because the device interrupts. Suppose it did not.
+
+\xpart{a} Rewrite the design using a \code{timer_list} that polls the device every 4 ms. What is the
+callback allowed to do, and what would you have to move?
+
+\xpart{b} With \code{hrtimer} instead, what changes about resolution and about where the callback
+runs?
+
+\xpart{c} For each design, say what happens to a sample that arrives just after a poll.
+
+\xpart{d} The device's FIFO holds 16 samples. At a 1 ms sample rate, what is the slowest poll
+interval that cannot lose data? What does that number become if the FIFO were 4 deep?
+
+\xpart{e} State the general rule for when polling is the right answer and when an interrupt is.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent]{A millisecond that is not a millisecond}{Cross-check}
+\label{c9:ex:9}
+
+Predict a duration from \code{HZ}, measure it, and find that one call takes eight times as long as
+it asks for.
+
+\xpart{a} \textbf{Predict.} This kernel is \code{HZ=250}. Using \code{msecs_to_jiffies} rounding up,
+and the rule that \code{schedule_timeout} guarantees \emph{at least} the requested number of
+jiffies, predict the measured duration of:
+\begin{itemize}
+  \item \code{msleep(1)}
+  \item \code{msleep(4)}
+  \item \code{msleep(10)}
+  \item \code{usleep_range(1000, 1000)}
+\end{itemize}
+Write all four down before running anything.
+
+\xpart{b} \textbf{Measure.} Load \code{qa_timing} with \code{reps=200} and record all four.
+
+\xpart{c} \textbf{Reconcile.} Answer each:
+\begin{itemize}
+  \item Which call came out furthest from what it asked for, and by what factor? Did your
+    prediction expect it?
+  \item Two of the four measurements are the same number to within a rounding error. Which two, and
+    is that a bug in the measurement, in \code{msleep}, or in your expectation?
+  \item \code{msleep(4)} asks for exactly one jiffy and takes two. Where does the second jiffy come
+    from? \code{msleep}'s source does not add one; find the sentence in \code{schedule_timeout}'s
+    documentation that explains it, and say why a guarantee of ``at least'' costs an extra tick.
+  \item \code{usleep_range(1000)} asks for the same duration as \code{msleep(1)} and takes a fifth
+    as long. What is it using instead, and what did you give up to get that?
+\end{itemize}
+
+\xpart{d} \textbf{Make a prediction and test it.} Your account of the extra jiffy implies something
+specific about \code{msleep(5)} on this kernel. Predict it, measure it, and say whether you were
+right.
+
+\xpart{e} \textbf{Change the constant.} Recompute all four predictions for \code{HZ=1000}. Which of
+the four measurements would change, and which would not? What does that tell you about which of
+these functions are quantised and which are not?
+
+\xpart{f} A driver contains \code{for (i = 0; i < 1000; i++) msleep(1);} in a loop, with a comment
+saying ``wait one second''. How long does it actually take on this kernel? On a \code{HZ=1000}
+kernel? Rewrite the line so it does what the comment says on both.
+
+\xpart{g} You are asked to document your driver's worst-case response time. Everything measured here
+was an average over 200 repetitions on an idle machine. Say what you would put in the document, what
+you would refuse to claim from these numbers, and what you would have to measure instead.
+Chapter~\ref{c12:ch} is that measurement.

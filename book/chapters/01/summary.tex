@@ -1,0 +1,56 @@
+% Section 1.3, from lectures/L01/README.md: what you should be able to do afterwards, the
+% questions to test yourself, and the next lecture.
+
+\section{Review}
+\label{c1:sec:review}
+
+\needspace{6\baselineskip}
+\subsection*{What you should be able to do now}
+After this chapter, you should be able to:
+\begin{itemize}
+  \item Name the four pieces of an embedded Linux system, and say for any given file which one it
+    belongs to.
+  \item Walk the boot chain from power-on to the first userspace process, and say what each step
+    does that the one before it could not.
+  \item Say what \code{-kernel} skips, and therefore what this course does not teach you.
+  \item Explain what a toolchain triplet names, and why a sysroot is not the same thing as the
+    host's \file{/usr/include}.
+  \item Answer the licence question for a given component: what must be published, to whom, and
+    when.
+  \item Say why an application that only makes system calls is not a derivative work of the kernel,
+    and why a kernel module usually is.
+  \item Predict whether a module will load, given its \code{MODULE_LICENSE} and the symbols it uses.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Questions to test yourself}
+\begin{enumerate}
+  \item A colleague says ``we ship Linux, so all our code has to be open source''. What is wrong
+    with that sentence, and what is the part of it that is right?
+  \item Your product has a bootloader, a kernel, a BusyBox root filesystem and one proprietary
+    daemon you wrote. A customer asks for the source. What do you have to give them?
+  \item Why does the boot chain have an SPL at all, given that U-Boot could do the same job?
+  \item What does \code{aarch64-linux-gnu} tell you that \code{aarch64} alone does not?
+  \item A driver is licensed MIT and calls a function exported with \code{EXPORT_SYMBOL_GPL}. What
+    happens, and at which point: compile, link, load, or run?
+  \item Why is the kernel image 24 MB when the machine it boots has one serial port and one timer?
+\end{enumerate}
+
+\needspace{6\baselineskip}
+\subsection*{Where to look}
+\begin{itemize}
+  \item The build targets are documented in the repository's root \file{README.md}, and
+    \code{make help} lists them all.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Looking ahead}
+Chapter~\ref{c2:ch} is about:
+\begin{itemize}
+  \item The command line, taken as the set of questions you are able to ask a running kernel.
+  \item \file{/proc} and \file{/sys}: not directories, and not files either.
+  \item What a two-megabyte userland gives up, measured against the one on your laptop.
+  \item Why PID 1 is different from every other process, and what happens if it exits.
+\end{itemize}
+The machine you built in this chapter is the machine the other eleven chapters run on.
+Chapter~\ref{c2:ch} is about learning to ask it what it is doing.

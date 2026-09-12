@@ -1,0 +1,262 @@
+% Preface: the README's opening, its emulator, Learning Outcomes, During the Course, Getting
+% Started, figures, written papers and code formatting sections; the prerequisites and the course
+% plan from info/README.md; and how a lecture is arranged, from lectures/README.md, as the front
+% matter of a book.
+
+\chapter{Preface}
+\markboth{Preface}{Preface}
+
+This book is for embedded engineers who write C and have never written it for a kernel. It goes
+from what a Linux system on a board is made of, through the commands that interrogate a running
+one, to a device driver you write yourself: memory-mapped registers, interrupts, locking, a device
+tree node, a kernel framework, and finally what all of that does to latency on a real-time kernel.
+
+It covers Linux as embedded engineers meet it: as a kernel you configure and build, a userland you
+assemble, and a driver you write for hardware nobody has written one for yet. Unlike an
+introductory Linux text, it assumes you can already write C and read a datasheet, and spends its
+time on the parts that are specific to kernel space:
+\begin{itemize}
+  \item What an embedded Linux system is made of, and the boot chain that assembles it.
+  \item Open source licences, and what shipping a product built on this kernel obliges you to
+    publish.
+  \item The command line, taught as the set of questions you can ask a running kernel.
+  \item Kernel architecture, the source tree, and Kconfig.
+  \item Kernel modules: building them, loading them, and the C environment they run in.
+  \item Character device drivers, and the userspace interface a driver actually presents.
+  \item Kernel memory allocation, memory-mapped I/O, DMA, and managed resources.
+  \item Concurrency, locking, and the contexts in which you are not allowed to sleep.
+  \item Interrupts, deferred work, wait queues, and time.
+  \item The driver model, the device tree, and how a driver finds its hardware.
+  \item Kernel frameworks, and why a driver that is a character device is usually a driver in the
+    wrong subsystem.
+  \item Real-time Linux: where latency comes from, what \code{PREEMPT_RT} changes, and what makes a
+    driver hostile to it.
+\end{itemize}
+
+\section*{Everything here runs in an emulator, and that is the design}
+There is no board. Every chapter, every lab and every measurement runs on
+\code{qemu-system-aarch64}, and the device your driver talks to is one the companion repository
+ships the source of.
+
+That is a real cost and it is worth naming before you start. You will not learn here what a
+floating input feels like, what a badly seated ribbon cable does to an I2C bus, or how long a board
+takes to come back after you brick its bootloader. Those are things only hardware teaches.
+
+What it buys is everything else. The device has a register that no real device has: it records the
+exact instant it raised its interrupt line, and lets your driver read that instant back. That one
+register turns interrupt latency from something you infer into something you subtract, and
+Chapter~\ref{c12:ch} is built on it. Beyond that, every reader gets the same machine, a wrong
+\code{writel} costs you a reboot that takes two seconds rather than a trip to a bench, and a clone
+of the repository plus three \code{make} targets is the whole of the setup.
+
+\section*{What you should be able to do at the end}
+Having worked through the book, you should be able to:
+\begin{itemize}
+  \item Name the four pieces of an embedded Linux system and say what each one does at boot.
+  \item Read an open source licence well enough to say what a product built on it must publish.
+  \item Configure and cross-build a kernel, and say what a given config option costs.
+  \item Write, build and load an out-of-tree kernel module.
+  \item Write a character device driver, and say what its \code{read()} must do that a userspace
+    \code{read()} need not.
+  \item Choose an allocator and a GFP flag from the context the code runs in.
+  \item Map a device's registers and access them without the compiler or the CPU reordering the
+    accesses out from under you.
+  \item Say what address a device doing DMA actually sees, and why a buffer you may dereference is
+    not automatically a buffer you may hand to hardware.
+  \item Pick a lock from what it protects and from where the contention comes from, and say why
+    sleeping in an interrupt handler is not a style question.
+  \item Write an interrupt handler, defer the work that does not belong in it, and block a reader
+    until the data exists.
+  \item Write a device tree node for a device, and a driver that probes from it with no address in
+    it.
+  \item Say which kernel framework a device belongs to, and what registering with it gives you
+    free.
+  \item Explain where latency comes from on a Linux system, what \code{PREEMPT_RT} changes about
+    it, and what a measurement taken under an emulator is not evidence of.
+\end{itemize}
+
+\section*{What you are assumed to know}
+You are expected to arrive already comfortable with:
+\begin{itemize}
+  \item Programming in C at the level of writing and debugging a few hundred lines: pointers,
+    structs, arrays, function pointers, and manual memory management.
+  \item Bit manipulation, and reading a register map out of a datasheet.
+  \item Working on a command line: files, paths, redirection, pipes, and running \code{make}.
+  \item What an interrupt is, at the level of the hardware: a line, a handler, and a return.
+\end{itemize}
+None of that is taught from scratch. It is refreshed where a lab needs it, briefly.
+
+What the book does teach from nothing is everything above the C: what a kernel is as a program,
+what a module is as a thing you load into a running one, what a driver owes to the userspace on one
+side and the hardware on the other, and why almost every rule in kernel programming turns out to be
+a rule about which context the code is running in.
+
+\textbf{The code is C, and this is not a C book.} Everything you write is ordinary C99 with a kernel
+API in front of it. There are no templates, no exceptions and no standard library; that last one is
+a bigger change than it sounds, and Chapter~\ref{c4:ch} spends a section on it.
+
+\textbf{Where this book sits.} It is written to be read on its own. It assumes, and does not
+derive, the process, scheduler and address-translation theory that Chapters~\ref{c3:ch}
+and~\ref{c7:ch} lean on, and the memory ordering that Chapter~\ref{c6:ch} states without proving;
+where a chapter needs one of them, it says so. The QAcademy course
+\emph{Embedded C}\footnote{\url{https://github.com/qrtech-academy/embedded-c}} covers the C itself.
+
+\section*{How the book is organised}
+The book is typeset from a twelve-lecture course, and each chapter is one lecture. Its sections are
+the lecture's appendices, in the same order and with the same subsections, so a chapter here and a
+lecture directory in the repository can be read side by side. The chapters fall into four parts:
+
+\begin{booktable}{@{}p{4.6em}p{3.6em}L@{}}
+  \thead{Chapter} & \thead{Lecture} & \thead{Topic} \\
+  \midrule
+  \multicolumn{3}{@{}l}{\textit{Part I: The system}} \\
+  1 & \file{L01} & Embedded Linux, and the licence you ship with it \\
+  2 & \file{L02} & The command line, and the system underneath it \\
+  3 & \file{L03} & The kernel: architecture, source tree, and configuration \\
+  \addlinespace
+  \multicolumn{3}{@{}l}{\textit{Part II: Writing a driver}} \\
+  4 & \file{L04} & Kernel modules \\
+  5 & \file{L05} & Character device drivers \\
+  6 & \file{L06} & Memory, MMIO, and resource management \\
+  \addlinespace
+  \multicolumn{3}{@{}l}{\textit{Part III: Concurrency, interrupts and time}} \\
+  7 & \file{L07} & Concurrency and locking \\
+  8 & \file{L08} & Interrupts and deferred work \\
+  9 & \file{L09} & Sleeping, waiting, and time \\
+  \addlinespace
+  \multicolumn{3}{@{}l}{\textit{Part IV: Fitting into the kernel}} \\
+  10 & \file{L10} & The device model and the device tree \\
+  11 & \file{L11} & Kernel frameworks \\
+  12 & \file{L12} & Real-time Linux \\
+\end{booktable}
+
+Every chapter opens with what is in it, works through the material, closes with a review of what
+you should now be able to explain, and ends with its exercises. The appendices hold the solutions
+to the exercises that are not code, and the two written papers described below.
+
+\textbf{Three topics are not covered here.} Yocto and Buildroot get a section in
+Chapter~\ref{c1:ch} and no more, because teaching either honestly costs two chapters that would come
+out of the driver material, and how to build a distribution is a different subject with different
+tools. Networking drivers are absent for the same reason: the network stack is the largest
+subsystem in the kernel, and a driver for it is not a first driver. CPU isolation and IRQ affinity
+are absent from Chapter~\ref{c12:ch} for a different reason: the target is a two-CPU QEMU guest, and
+isolating one of two CPUs from a scheduler that is itself emulated would produce numbers that say
+nothing about a real machine. A claim about pinning that the target cannot demonstrate is worse
+than no claim, and Chapter~\ref{c12:ch} is the chapter that argues that.
+
+\section*{One driver, grown}
+Every chapter has a lab, and from Chapter~\ref{c4:ch} onwards they are one driver, grown. You start
+with a module that prints a line, and finish with a driver that probes off a device tree node,
+services interrupts, exposes its device through a kernel framework, and has had its latency
+measured under two different preemption models.
+
+\textbf{The code you write is yours.} The repository ships the specification in prose, which is in
+this book as the section of each chapter that specifies its lab, together with the Kbuild files,
+the KUnit suites and the on-target test scripts. It never ships the driver itself.
+
+The harness is the machine. The code you write is a kernel module, and a kernel module runs in a
+kernel: there is no \code{main}, no libc, and nothing on the host that can call your
+\code{read()}. So \code{make test} builds your module, drops it into an initramfs with the
+lecture's \file{run.sh}, boots \code{qemu-system-aarch64}, and reads the serial console. Two things
+are tested that way:
+\begin{itemize}
+  \item \textbf{KUnit}, for the parts that are pure logic. A ring buffer's wrap-around and a
+    register field's decoding are functions with no hardware in them, and KUnit runs them inside the
+    kernel with a real test framework around them. It is also what mainline uses, which makes it
+    worth meeting.
+  \item \textbf{The on-target script}, for everything else. Loading the module, reading \file{/dev},
+    checking \code{dmesg}, counting interrupts in \file{/proc/interrupts}; all the things that are
+    only true of a driver in a running kernel.
+\end{itemize}
+Both report through the same three markers on the console, and \code{make test} distinguishes a
+test that failed from a kernel that panicked before the test began. That distinction matters more
+here than it does in userspace, because in kernel space the second one is a normal Tuesday.
+
+\section*{What the exercises look like}
+Every chapter ends with eight to ten exercises, numbered within the chapter, and each labelled with
+its kind:
+
+\begin{booktable}{@{}lL@{}}
+  \thead{Kind} & \thead{What it asks of you} \\
+  \midrule
+  \kindtag[fillaccent2]{Recall} & Say it back, in your own words, with nothing in front of you. \\
+  \kindtag[fillaccent3]{Hand calculation} & Work out a number on paper. \\
+  \kindtag[fillaccent4]{Design} & Choose between two mechanisms and defend the choice. \\
+  \kindtag{Code} & Write something and run it. \\
+  \kindtag[fillaccent]{Cross-check} & Exactly one per chapter, always last. \\
+\end{booktable}
+
+The Cross-check is the signature exercise and the reason the other four exist. You compute a number
+by hand, you run your own code on the same problem, and then you reconcile the two. They will rarely
+agree exactly, and reconciling them is the point: ``my two answers differ by eight percent'' is not
+a failure of the exercise, it is the exercise. Each one names the artefacts to measure and the
+questions to ask about the gap, so that you can tell a discrepancy you have explained from one you
+have merely noticed.
+
+Where an exercise can be checked mechanically, a \textbf{Check yourself} line says how.
+
+\textbf{The solutions to the exercises that are not code are in Appendix~\ref{sol:ch:solutions}}:
+every Recall, Hand calculation and Design exercise, and the parts of each Cross-check that are
+worked on paper. \textbf{The Code exercises have no solution}, here or in the repository. Each is
+checked by running it on the target, and its Check yourself line says how; an answer to read would
+replace the work. Try each exercise before you turn to its solution.
+
+\section*{The figures are drawn from code}
+The nineteen figures in this book are the course's own, generated by the figure pipeline in the
+repository's \file{diagrams/} directory and printed here exactly as the lectures show them. None of
+them is decoration: half are block diagrams of something the prose can only describe one step at a
+time, and the rest are charts of numbers the course measured on its own target. Every number on
+every chart comes from one file, \file{diagrams/measured.py}, which cites the section that
+publishes it, so a chart and the table beside it cannot disagree.
+
+\section*{Two written papers, and what they are not}
+Nothing in the course this book comes from is marked. Assessment is the lab after every chapter,
+checked on the target by \code{make test}, and the exercises that end every chapter.
+
+Appendices~\ref{exam:ch:about} to \ref{ansb:ch:answers} hold two four-hour papers with model
+answers, and they check something else: \textbf{what you can reconstruct on paper, with nothing in
+front of you.} Ten questions each, mixing prose with kernel C you either write or repair, and no
+machine in the room to tell you which it is.
+
+\textbf{They exist purely so that you can test your own knowledge after working through the book.
+They gate nothing, they are not a qualification, and no part of the book requires them.}
+
+\textbf{Take one after the last chapter.} Both papers draw on all twelve chapters, so sitting one
+partway through examines material you have not read yet. Their model answers mark the code
+questions against checklists rather than printing listings, so that they do not become back-door
+solutions to the labs.
+
+\section*{Setting up}
+Everything builds inside a container, so the only thing you install is Docker. On Windows, install
+it under WSL2 and work from the WSL side of the filesystem. Then clone the companion repository,
+\repo, and from its root:
+
+\begin{shell}
+make env       # Build the container image. Once, and slow.
+make kernel    # Cross-build the arm64 kernel. Once, and slower.
+make qemu      # Build QEMU with the course's device in it. Once.
+make rootfs    # Build the BusyBox initramfs.
+make boot      # Boot the target and get a shell. Ctrl-A X quits.
+\end{shell}
+
+\noindent\code{make help} lists every target. If you would rather install the toolchain natively,
+set \code{QA_NO_CONTAINER=1} and install the packages listed in \file{docker/Dockerfile}; nothing
+in the course requires the container except the reproducibility of it.
+
+Once a lab is written, \code{make build} compiles it and \code{make test} boots it and runs its
+tests. Both narrow to one lecture with \code{L=}:
+
+\begin{shell}
+make build L=L06
+make test L=L06
+\end{shell}
+
+\noindent Every target skips loudly rather than failing when what it needs does not exist yet, and
+a skip names the target that would fix it.
+
+\textbf{A note on the code style.} The C in the repository is formatted with \code{clang-format}
+against the \file{.clang-format} shared by every QAcademy course, so the kernel code in it does
+\emph{not} follow the Linux kernel's own coding style, and would be rejected upstream on that basis
+alone. That is a deliberate trade for consistency with the rest of QAcademy, and
+\secref{c4:app:a9} shows the same function in both styles, so that opening a file in
+\file{drivers/} is not a surprise.

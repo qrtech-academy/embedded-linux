@@ -1,0 +1,47 @@
+% Chapter 4, typeset from lectures/L04: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{Kernel Modules}
+\label{c4:ch}
+
+{\large\itshape The smallest useful thing you can write for a kernel, and the environment it runs
+in.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item \code{module_init} and \code{module_exit}: code with no \code{main}, that runs once and then
+    waits.
+  \item Building out of tree, and what \code{M=} actually does.
+  \item \code{insmod}, \code{rmmod}, \code{modprobe}, \code{depmod}, and why the first and third are
+    not the same command.
+  \item Module parameters, and the sysfs directory you get without asking.
+  \item \code{EXPORT_SYMBOL} against \code{EXPORT_SYMBOL_GPL}, and a licence check that happens at
+    load time.
+  \item \code{printk}, the log levels, and \code{pr_debug} that costs nothing until you turn it on.
+  \item The C environment: no libc, no floating point, and a stack you can overflow.
+  \item A module that loads, then a second one that uses a symbol from the first.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is about the smallest thing you can add to a running kernel, and the environment it
+runs in. It explains why a module's init function is not a \code{main}, how an out-of-tree module is
+built by the kernel's own build system and why the result belongs to one kernel, and what
+\code{insmod}, \code{modprobe}, \code{depmod} and \code{rmmod} each do. It shows where the licence
+you declare is checked, twice and with two very different messages, how one line of parameter
+declaration produces a sysfs file nobody wrote, how to print, and what the C inside a kernel may
+not do.
+
+\Secref{c4:app:a} is the whole of the material, and ends with why this repository's code is not
+formatted the way the kernel's is. An out-of-tree module cannot be built until \code{make kernel}
+has finished. The lab is specified by two of the exercises in \secref{c4:sec:exercises}:
+Exercise~\ref{c4:ex:6} is a first module with two parameters, and Exercise~\ref{c4:ex:7} is a pair
+of modules, one calling a function the other exports. The exercises end with the Cross-check:
+predict how much memory a module occupies from its sections, load it, and find out why the
+kernel's figure is five times larger. The lab is done when \code{make test L=L04} reports
+\textbf{PASSED} with twelve checks: the load order that fails, the holders directory, and the
+kernel refusing to unload a module that is in use.
+
+\input{chapters/04/modules}
+\input{chapters/04/summary}
+\input{chapters/04/exercises}

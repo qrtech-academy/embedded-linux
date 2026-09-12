@@ -1,0 +1,319 @@
+% Section 7.1, from lectures/L07/appendix/a_concurrency_and_locks.md.
+
+\section{Where Concurrency Comes From, and What to Do About It}
+\label{c7:app:a}
+
+Five ways two pieces of kernel code can run at once, what each of the locking primitives costs, and
+the single question that chooses between them. \S\ref{c7:app:b} is deadlock and the tool that finds
+it.
+
+The idea to carry: \textbf{every locking decision in the kernel is downstream of one question, which
+is whether the code holding the lock is allowed to sleep.} Get that right and the rest follows. Get
+it wrong and the failure is a deadlock under load on a machine you do not own.
+
+\subsection{Five sources, two of which you have already met}
+\label{c7:app:a1}
+
+\begin{booktable}{@{}lLl@{}}
+  \thead{Source} & \thead{Another thread of control appears because} & \thead{First met in} \\
+  \midrule
+  \textbf{SMP} & Another CPU is running your code at the same time & Chapter~\ref{c3:ch} \\
+  \textbf{Preemption} & The scheduler stops you mid-function and runs something else & Chapter~\ref{c3:ch} \\
+  \textbf{Interrupts} & A device raised a line and your handler runs & Chapter~\ref{c8:ch} \\
+  \textbf{Timers} & Something you scheduled earlier fires & Chapter~\ref{c9:ch} \\
+  \textbf{Workqueues} & Deferred work you queued runs on a kernel thread & Chapter~\ref{c8:ch} \\
+\end{booktable}
+
+\noindent On a single-CPU kernel built with \code{PREEMPT_NONE}, only the interrupt is left, with
+the timers that fire on the way out of one, and a great deal of old driver code is written for
+exactly that world. \textbf{Copying it is dangerous},
+because the two assumptions it makes silently, that nothing else runs your code and that you cannot
+be stopped mid-function, are both false on the target this course boots.
+
+That target has two CPUs and \code{CONFIG_PREEMPT=y}, which is the ordinary configuration of a
+modern embedded Linux, and it is enough to lose data in a way you can measure in about a second.
+
+\subsection{What a race actually costs}
+\label{c7:app:a2}
+
+The lab's \code{qa_race} module runs four kernel threads, each incrementing a shared counter twenty
+thousand times, so 80,000 increments are expected. Ten consecutive unlocked runs on this target:
+
+\begin{console}
+expected=80000 actual=78436 lost=1564
+expected=80000 actual=73529 lost=6471
+expected=80000 actual=70292 lost=9708
+expected=80000 actual=67722 lost=12278
+expected=80000 actual=63562 lost=16438
+expected=80000 actual=63195 lost=16805
+expected=80000 actual=62715 lost=17285
+expected=80000 actual=62525 lost=17475
+expected=80000 actual=53455 lost=26545
+expected=80000 actual=49953 lost=30047
+\end{console}
+
+\noindent \textbf{Between 2\% and 38\% of the work vanished, and no two runs agree.} With the
+spinlock switched on, every run returns exactly 80,000.
+
+\code{counter++} is not one operation. It is a load, an add, and a store, and two CPUs interleaving
+those three steps lose one of the two increments. That is all a lost update is.
+
+\textbf{The part worth dwelling on is how hard this was to make happen.} The first version of that
+module lost \emph{nothing}, three runs in a row, on the same hardware with the same code. The
+threads were being created one at a time, and the first finished before the last was created, so
+they never overlapped. Adding a starting barrier, so all four threads begin together, took the loss
+from zero to a third of the total.
+
+Nothing about the code changed. The bug was there the whole time. \textbf{A race that does not
+reproduce is not a race that is absent}, and ``it works on my machine'' is usually a statement about
+timing rather than about correctness.
+
+The same point again, from the other direction. With the barrier in place and everything else
+identical, varying only how much work each thread does:
+
+\begin{narrowtable}{@{}rrr@{}}
+  \thead{Increments per thread} & \thead{Expected} & \thead{Loss, three runs} \\
+  \midrule
+  200 & 800 & 0\%, 0\%, 0\% \\
+  2,000 & 8,000 & 0\%, 0\%, 0\% \\
+  20,000 & 80,000 & 23.3\%, 20.8\%, 6.9\% \\
+  200,000 & 800,000 & 31.7\%, 34.9\%, 26.5\% \\
+\end{narrowtable}
+
+\noindent \textbf{The first two rows are the same broken program, returning the right answer every
+time.} Below about ten thousand iterations the threads do not overlap for long enough to collide,
+even though they were released together; the work finishes inside the window it takes the other
+threads to get going. There is no size at which the code is correct, only sizes at which it has not
+yet been caught.
+
+Anyone testing this would reasonably pick a small iteration count, because it is faster. They would
+get a clean run, every time, and be wrong.
+
+\lecturefigure{lectures/L07/appendix/images/lost_update.png}
+  {A sequence diagram with a lane for each of two CPUs, time running downwards. Both load the counter
+   and get the same n, both add one, and both store n+1. Two increments happened and the counter
+   advanced by one.}
+  {fig:lost_update}
+
+\lecturefigure[0.76]{lectures/L07/appendix/images/race_loss.png}
+  {A bar chart of increments lost against increments per thread, with the three individual runs marked
+   as dots on each bar. At 200 and 2,000 per thread the loss is zero in every run; at 20,000 and
+   200,000 it ranges from about 7 to 35 per cent.}
+  {fig:race_loss}
+
+\subsection{Atomics, and the thing they do not fix}
+\label{c7:app:a3}
+
+\begin{ccode}
+atomic_t counter = ATOMIC_INIT(0);
+atomic_inc(&counter);
+\end{ccode}
+
+\noindent \code{atomic_inc} makes the load-add-store indivisible, and it fixes \S\ref{c7:app:a2}'s
+counter completely.
+
+\textbf{It does not fix a data structure}, and this is the misconception worth the most time. A ring
+buffer has a head, a level, and an array, and its invariant spans all three. Making each of them
+\code{atomic_t} makes each individual update indivisible and leaves the invariant exactly as broken:
+
+\begin{ccode}
+/* Still wrong, with every field atomic. */
+if (atomic_read(&level) < capacity) {      /* another CPU can act here */
+        data[(atomic_read(&head) + atomic_read(&level)) % capacity] = byte;
+        atomic_inc(&level);
+}
+\end{ccode}
+
+\noindent Two writers can both pass the test, both compute the same slot, and both write to it; one
+byte is lost and \code{level} says two arrived. Atomicity per field buys nothing when the thing that
+must be atomic is the \emph{sequence}.
+
+The rule: \textbf{atomics protect one variable, locks protect an invariant.} If you can state what
+must be true before and after, and it mentions more than one variable, you need a lock.
+
+Useful atomics beyond the counter: \code{atomic_inc_return}, \code{atomic_dec_and_test} (returns
+true when the result is zero, which is how refcounts are implemented), and \code{atomic_cmpxchg}.
+
+\subsection{The compiler is also a problem}
+\label{c7:app:a4}
+
+Before the CPU gets a chance to reorder anything, the compiler already has.
+
+\begin{ccode}
+while (!flag) { }        /* may never re-read flag */
+\end{ccode}
+
+\noindent \code{flag} is not volatile, nothing in the loop changes it, so the compiler may load it
+once and spin on a register forever. This is a correct optimisation and an infinite loop.
+
+\begin{ccode}
+while (!READ_ONCE(flag)) { cpu_relax(); }
+\end{ccode}
+
+\noindent \code{READ_ONCE} and \code{WRITE_ONCE} force the access to happen exactly once, in the
+right place. They are not barriers and they do not order anything against other accesses; they stop
+the compiler from inventing, eliding or splitting the access itself.
+
+For ordering between accesses there are memory barriers, \code{smp_mb()}, \code{smp_rmb()},
+\code{smp_wmb()}, and their acquire/release forms. \textbf{Most driver code should not be using them
+directly.} A lock provides both mutual exclusion and the ordering, and code that reaches for bare
+barriers is code that has to be right about the memory model of every architecture it will ever run
+on. \Secref{c6:app:b5} covers the same problem where the other party is a device rather than a
+CPU.
+
+\subsection{Spinlocks}
+\label{c7:app:a5}
+
+\begin{ccode}
+static DEFINE_SPINLOCK(my_lock);
+
+spin_lock(&my_lock);
+/* critical section */
+spin_unlock(&my_lock);
+\end{ccode}
+
+\noindent A waiting CPU \textbf{spins}, burning cycles until the lock is free. It does not sleep,
+which is the whole point: a spinlock is usable from contexts where sleeping is forbidden, and an
+interrupt handler is one.
+
+Two consequences:
+\begin{itemize}
+  \item \textbf{The critical section must be short.} Every cycle spent holding it is a cycle another
+    CPU spends doing nothing. Microseconds, not milliseconds.
+  \item \textbf{You may not sleep while holding one.} No \code{kmalloc(GFP_KERNEL)}, no mutex, no
+    \code{copy_to_user}, no \code{msleep}. Sleeping with a spinlock held can deadlock the machine
+    outright, and \code{CONFIG_DEBUG_ATOMIC_SLEEP}, which this course enables, turns it into a
+    complaint instead.
+\end{itemize}
+
+\subsubsection{The interrupt variants, and why they exist}
+\label{c7:app:a:the-interrupt-variants-and-why-they-exist}
+
+Consider a lock taken both by a driver's \code{read()} and by its interrupt handler. Process context
+takes the lock; before it releases, the device interrupts \emph{the same CPU}; the handler runs and
+tries to take the same lock; it spins, waiting for a lock that will be released by code that cannot
+run until the handler returns. The machine stops.
+
+\begin{ccode}
+unsigned long flags;
+
+spin_lock_irqsave(&my_lock, flags);     /* disables interrupts on this CPU, saves the old state */
+/* critical section */
+spin_unlock_irqrestore(&my_lock, flags);
+\end{ccode}
+
+\begin{booktable}{@{}>{\hsize=0.53\hsize}L>{\hsize=1.09\hsize}L>{\hsize=1.38\hsize}L@{}}
+  \thead{Variant} & \thead{Disables} & \thead{Use when} \\
+  \midrule
+  \code{spin_lock} & Preemption only & The lock is never taken in interrupt context \\
+  \code{spin_lock_irq} & Preemption and interrupts & You know interrupts were enabled \\
+  \code{spin_lock_irqsave} & The same, restoring the prior state & Anywhere. The one to default to \\
+  \code{spin_lock_bh} & Preemption and softirqs & The lock is shared with a softirq or tasklet \\
+\end{booktable}
+
+\noindent \code{irqsave} rather than \code{irq} because you may be called with interrupts already
+disabled, and blindly re-enabling them on unlock would be a bug in the caller's code that you
+introduced.
+
+Note that this only guards against the handler on the \textbf{same} CPU. Another CPU's handler is
+excluded by the lock itself; that is what the lock is for.
+
+\subsection{Mutexes}
+\label{c7:app:a6}
+
+\begin{ccode}
+static DEFINE_MUTEX(my_mutex);
+
+mutex_lock(&my_mutex);
+/* critical section, may sleep */
+mutex_unlock(&my_mutex);
+\end{ccode}
+
+\noindent A waiting task \textbf{sleeps}: it leaves the run queue and the CPU does something else.
+Which means:
+\begin{itemize}
+  \item It \textbf{cannot} be used in interrupt context or anywhere else that may not sleep.
+  \item The critical section \textbf{may} sleep. \code{kmalloc(GFP_KERNEL)}, \code{copy_to_user},
+    and I/O are all fine.
+  \item It scales better for anything long, because waiters cost nothing while they wait.
+\end{itemize}
+\code{mutex_lock_interruptible} returns \code{-EINTR} if a signal arrives while waiting, which is
+what you want in a driver reachable from a system call; a user pressing Ctrl-C expects something to
+happen.
+
+\subsubsection{Choosing}
+\label{c7:app:a:choosing}
+
+One sentence decides it: \textbf{can the code inside the critical section sleep, and can the code
+waiting for it afford to wait?}
+
+\begin{narrowtable}{@{}lll@{}}
+   & \thead{Spinlock} & \thead{Mutex} \\
+  \midrule
+  Usable from an interrupt handler & Yes & \textbf{No} \\
+  The critical section may sleep & \textbf{No} & Yes \\
+  Waiter burns CPU & Yes & No \\
+  Short critical section & Good & Overhead dominates \\
+  Long critical section & Terrible & Good \\
+\end{narrowtable}
+
+\noindent If the answer is ``an interrupt handler touches this'', it is a spinlock and the critical
+section has to be short enough to live inside one. If the answer is ``this copies to userspace'', it
+is a mutex and no interrupt handler may touch that data.
+
+Also available: \textbf{semaphores}, which are a counting generalisation and are mostly legacy in
+new code; and \textbf{reader-writer locks} (\code{rwlock_t}, \code{rw_semaphore}), which allow
+concurrent readers. Reader-writer locks are less of a win than they look, because they are slower
+than a plain lock in the uncontended case, and the uncontended case is most of them.
+
+\subsection{Atomic context}
+\label{c7:app:a7}
+
+``Atomic context'' means \textbf{any context in which the code may not sleep}. You are in it when:
+\begin{itemize}
+  \item You are in an interrupt handler.
+  \item You are in a softirq, tasklet or timer callback.
+  \item You hold a spinlock.
+  \item You have disabled preemption or interrupts explicitly.
+\end{itemize}
+What is forbidden there is anything that might call \code{schedule()}:
+
+\begin{narrowtable}{@{}ll@{}}
+  \thead{Forbidden} & \thead{Because} \\
+  \midrule
+  \code{kmalloc(GFP_KERNEL)} & May sleep to reclaim memory. Use \code{GFP_ATOMIC} \\
+  \code{mutex_lock} & Sleeps when contended \\
+  \code{copy_to_user} & May fault, and faulting may sleep \\
+  \code{msleep}, \code{schedule} & Obviously \\
+  \code{wait_event} & Chapter~\ref{c9:ch} \\
+\end{narrowtable}
+
+\noindent \textbf{This is not a style rule and there is no ``it usually works''.} Sleeping in atomic
+context is a bug even on the runs where nothing goes wrong, because whether it goes wrong depends on
+whether the allocator happened to have memory, or whether the lock happened to be free.
+
+The kernel will tell you, if you ask it to. \code{CONFIG_DEBUG_ATOMIC_SLEEP}, enabled by
+\file{kernel/qa.config} for this course, makes any sleep in atomic context print a \code{BUG:
+sleeping function called from invalid context} with a backtrace. \code{might_sleep()} is the
+annotation that produces it, and it is worth putting at the top of any function of yours that can
+sleep, so that a caller who gets it wrong finds out immediately rather than eventually.
+
+\subsection{RCU and per-CPU, in one section}
+\label{c7:app:a8}
+
+Two mechanisms for the case where a lock is the wrong shape. Both are worth recognising; neither is
+something to reach for in a first driver.
+
+\textbf{RCU} (read-copy-update) is for data read constantly and written rarely. Readers take no lock
+at all and pay almost nothing; a writer builds a new version, publishes it with one atomic pointer
+store, and waits until every reader that might still hold the old pointer has finished before
+freeing it. That waiting is the cost, and it is why RCU suits routing tables and module lists and
+not a driver's ring buffer.
+
+\textbf{Per-CPU data} removes the sharing instead of protecting it. \code{DEFINE_PER_CPU} gives each
+CPU its own copy, so there is nothing to race over; statistics counters are the classic use, summed
+across CPUs only when somebody reads them. \file{/proc/stat}'s per-CPU lines in \S\ref{c2:app:b2}
+are exactly this.
+
+The unifying observation: \textbf{the fastest lock is the one you did not need}, and both of these
+are ways of arranging not to need one.

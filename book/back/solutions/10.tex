@@ -1,0 +1,386 @@
+% Solutions to the Chapter 10 exercises that are not code, from lectures/L10/appendix/c_exercises.md.
+% Exercises 10.6 and 10.7 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 10: The Device Model and the Device Tree}
+\label{sol:sec:c10}
+Answers to the exercises in \secref{c10:sec:exercises}. Exercises~\ref{c10:ex:6} and~\ref{c10:ex:7}
+are Code, and are checked on the target: the first as its Check yourself line says, the second by
+the unbind and rebind that \file{run.sh} performs.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c10:ex:1}{Bus, device, driver}{Recall}
+
+\xpart{a} \textbf{A bus} is a matching policy: the rule by which the kernel decides which of the
+drivers registered with it can handle which of the devices registered with it, and the two lists it
+applies the rule to. \textbf{A device} is the kernel's record that something exists, with whatever
+describes it: its identity, its registers, its interrupts. \textbf{A driver} is code that says which
+devices it can handle and supplies the \code{probe} and \code{remove} that take one on and give it
+up.
+
+\xpart{b} It is for devices that cannot be discovered: the blocks inside an SoC, which sit at fixed
+addresses on the processor's own interconnect and announce nothing. That is also what its devices
+share: something other than the hardware has to declare that each one exists, and on this target
+that something is the device tree. The bus then matches them against drivers by
+\code{compatible}, by ACPI identity or by name (\code{platform_match},
+\file{drivers/base/platform.c}).
+
+\xpart{c} The kernel created it, from the \code{qa-dev@0} node in the device tree QEMU generated,
+during boot and before any module could be loaded. \code{of_platform_default_populate_init}, an
+\code{arch_initcall_sync} (\file{drivers/of/platform.c}:600), walks the tree from the root. It
+descends into \code{platform-bus@c000000} because that node's \code{compatible} includes
+\code{simple-bus}, and creates a platform device for each child. \code{of_device_alloc} translates
+the node's \code{reg} into a resource there and then, and the device is named \code{c000000.qa-dev}
+from that translated address and the node's name (\code{of_device_make_bus_id},
+\file{drivers/of/device.c}:302--309).
+
+\xpart{d} No; either order works, and that is the point of the model. \textbf{Device first}, as
+\code{qa-dev} is: registering the driver makes the bus try it against every device not yet bound,
+and \code{probe} runs inside \code{insmod}. \textbf{Driver first}: the driver waits, and when the
+device is added later, because it was plugged in, or an overlay added its node, or the driver of
+its parent probed, the bus tries the new device against every registered driver and \code{probe}
+runs then. The author does nothing differently for either: \code{probe} is written the same way.
+What the author must not do is assume an order between devices, which is what
+\code{-EPROBE_DEFER} is for.
+
+\xpart{e} \file{/sys/bus/<bus>/devices} groups devices by how they are attached, which is the
+matching policy that found them; \file{/sys/class/<class>} groups them by what they are to
+userspace, whatever they are attached by. A program looking for all the serial ports reads
+\file{/sys/class/tty}, where a PL011, a USB serial adapter and a virtual console all appear, although
+the first is on the \code{amba} bus, the second on \code{usb}, and the third on no bus at all.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c10:ex:2}{Probe and remove}{Recall}
+
+\xpart{a} Once for each device that matches: two \code{qa-dev} nodes, or two of the same chip on a
+board, mean two calls to the same function in the same loaded module. It also runs again for a
+device that is unbound and bound again, and after a deferral. That rules out keeping anything that
+belongs to a device in a file-scope variable. Everything a device needs hangs off its own
+\code{struct device}: allocated with \code{devm_kzalloc} against it, attached with
+\code{platform_set_drvdata}, and found again from whatever pointer each callback is handed.
+
+\xpart{b} Any machine with two of the device, as in part e) of Exercise~\ref{c10:ex:9}. The second
+\code{probe} overwrites \code{regs}, so from then on everything done for the first device goes to
+the second device's registers. The first device's handler reads and acknowledges the second
+device's \code{IRQ_STATUS}, never its own, so the first device's level-triggered line is never
+cleared: an interrupt storm (\secref{c8:app:a6}), or, if the handler correctly returns
+\code{IRQ_NONE} when the status it read shows nothing pending, the kernel disabling the line with
+\code{nobody cared} (\secref{c8:app:a:the-return-value}). And unbinding the second device unmaps the
+registers the first is still using.
+
+\xpart{c} Because by the time \code{remove} is called, the decision has been made somewhere the
+driver has no say: \code{rmmod}, a write to \code{unbind}, or the device itself going away, perhaps
+already physically gone. The core has nothing to offer in return for an error. It cannot keep a
+driver bound to a device that is being removed, or unload half a module, and a \code{remove} that
+stops partway leaves state that nobody can finish tearing down. So a failure from \code{remove}
+would mean nothing, and the \code{void} return type (\file{include/linux/platform_device.h}:245)
+says so. What the driver must do instead is make every step of \code{remove} succeed, which with
+\code{devm_} is little more than stopping the device.
+
+\xpart{d} It says ``something I need is not available yet; call me again later'': a clock, a
+regulator, a GPIO or an interrupt controller whose driver has not probed. The core puts the device
+on its list of deferred devices without reporting a failure (\code{driver_deferred_probe_add},
+\file{drivers/base/dd.c}:132), tries every device on that list again each time another driver binds
+successfully, and once more when the initcalls are done; anything still waiting is listed in
+\file{/sys/kernel/debug/devices_deferred}. The functions that look up a dependency, such as
+\code{devm_clk_get} and \code{platform_get_irq}, return \code{-EPROBE_DEFER} themselves, so a driver
+usually only passes it on. The alternative is to return a real error such as \code{-ENODEV}: the
+probe fails for good, and the driver works only on a kernel where the dependency happened to probe
+first, which is decided by link and initcall order and not by anything the driver controls.
+
+\xpart{e} Whatever makes the device reachable from userspace: registering a character device, a
+class device, or the device with a subsystem such as IIO or GPIO. The reason is the one
+\secref{c5:app:a3} gave: after \code{cdev_add} the device is live, and a call can arrive in your
+code, on another CPU, before \code{probe} has returned. So everything that call touches, the
+mapping, the interrupt, the private structure, must be set up before the call that publishes it.
+The driver core keeps the same rule for the attributes in \code{.dev_groups}: it adds them only
+after \code{probe} has returned successfully (\file{drivers/base/dd.c}:676).
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c10:ex:3}{Reading a device tree}{Hand calculation}
+
+\xpart{a} Two: one address cell and one size cell. You know because \code{thing}'s parent,
+\code{bus@10000000}, declares \code{\#address-cells = <1>} and \code{\#size-cells = <1>}; the node
+itself does not say. So \code{reg = <0x2000 0x40>} is one region, at address \code{0x2000} and
+\code{0x40} bytes long.
+
+\xpart{b} Four. The child address takes the bus's own \code{\#address-cells}, 1: \code{0x1000}. The
+parent address takes the root's \code{\#address-cells}, 2: \code{0x0 0x10000000}, which is
+\code{0x0_10000000}. The size takes the bus's \code{\#size-cells}, 1: \code{0x100000}. So child
+addresses \code{0x1000} to \code{0x100FFF} map to parent addresses \code{0x10000000} to
+\code{0x100FFFFF}.
+
+\xpart{c} \code{0x2000} lies inside the child range, which starts at \code{0x1000}, so the offset
+into the range is \code{0x2000 - 0x1000 = 0x1000}, and the registers start at
+\code{0x10000000 + 0x1000 =} \textbf{\code{0x10001000}}. They end at
+\code{0x10001000 + 0x40 - 1 = 0x1000103F}. Adding the child address to the parent base without
+subtracting the child base, which is the mistake a range that does not start at zero exists to
+catch, gives \code{0x10002000}, one page too high.
+
+\xpart{d} \code{acme,thing-v2}. A driver binds if its table contains any of the node's strings, and
+where the table contains several, the entry for the earlier string scores higher
+(\code{__of_device_is_compatible}, \file{drivers/of/base.c}:334), so a driver that knows both uses
+its \code{thing-v2} entry and whatever match data goes with it. The second string is the fallback:
+it says the chip is compatible with the original \code{thing}, so a kernel whose only driver is for
+that, an older one for instance, still binds the device and drives what the two have in common.
+
+\xpart{e} Cell 0 is 0, an SPI; cell 1 is 45, \code{0x2D}, the number among the SPIs; cell 2 is 1,
+rising edge. The GIC's own numbering adds the SPI base of 32, so this is hardware interrupt
+$45 + 32 = \mathbf{77}$, \code{0x4D}, edge-triggered on the rising edge.
+
+\xpart{f} Yes: \code{acme,thing} is the node's second string, and one match is all that binding
+needs. With only \code{acme,thing-v3} it does not bind, because that string is not in the node's
+list, and \code{probe} is never called. A driver for a newer chip cannot claim an older one;
+compatibility is declared by the device, not by the driver.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c10:ex:4}{What the helpers do}{Hand calculation}
+
+\xpart{a} At the moment of the call it reads nothing from the tree. It takes the device's memory
+resource 0, which the kernel built from \code{reg} entry 0, translated through every \code{ranges}
+above it, when it created the device (\file{drivers/of/platform.c}:133); then it claims that region
+and maps it. On success it returns the mapping, a \code{void __iomem *}. On failure it returns an
+error packed into the pointer: \code{-EINVAL} if there is no such memory resource, \code{-EBUSY} if
+the region is already claimed, \code{-ENOMEM} if the mapping fails
+(\code{__devm_ioremap_resource}, \file{lib/devres.c}:135--165). It never returns \code{NULL}.
+
+\xpart{b} Entry 0 of \code{interrupts}, with \code{interrupt-parent} to find the controller, or
+\code{interrupts-extended}, which names both. It has that controller's IRQ domain translate the
+specifier and create the mapping, and returns the Linux IRQ number, which is positive. On failure
+it returns a negative error: \code{-EPROBE_DEFER} if the controller has not registered its domain
+yet (\file{drivers/of/irq.c}:470), \code{-ENXIO} if there is no such interrupt, and \code{-EINVAL}
+rather than 0 if the mapping produced 0 (\file{drivers/base/platform.c}:234--238). It never returns
+0.
+
+\xpart{c} The property \code{fifo-depth}, as one big-endian cell, which it stores in \code{v} in the
+processor's own byte order. It returns 0 on success. On failure it returns \code{-EINVAL} if the
+property does not exist, \code{-ENODATA} if it has no value, and \code{-EOVERFLOW} if it is too
+short to hold a cell (\file{include/linux/of.h}:1350), and leaves \code{v} untouched, which is what
+makes the default idiom of \secref{c10:app:b6} work.
+
+\xpart{d} \code{platform_get_irq} returns a negative error code as an \code{int}, and a positive
+number on success: test \code{irq < 0}, and return \code{irq} if it is.
+\code{devm_platform_ioremap_resource} packs its error into the pointer: test \code{IS_ERR(regs)},
+and return \code{PTR_ERR(regs)} if it is. \code{of_property_read_u32} returns zero for success and
+delivers the value through its third argument: any non-zero return is the failure, which for an
+optional property means ``use the default'' rather than a reason to give up.
+
+\xpart{e} It works on every board where the call succeeds, because the number is positive and the
+check passes, and that includes every board the driver was tested on. It silently does the wrong
+thing on every board where the call fails, because \code{platform_get_irq} never returns 0 and the
+check never fires. The negative error goes on to \code{devm_request_irq} as an \code{unsigned int},
+a huge number with no descriptor behind it, and the request fails with \code{-EINVAL}
+(\file{kernel/irq/manage.c}:2178--2180). The worst case is a board whose interrupt controller
+probes after this driver: \code{platform_get_irq} returns \code{-EPROBE_DEFER}, which it does not
+print, the driver turns it into \code{-EINVAL}, the core reports that the probe failed with error
+-22, and the device is never tried again.
+
+\xpart{f} From \secref{c6:app:b7}: \code{request_mem_region} and \code{ioremap}, the two
+acquisitions, and \code{iounmap} and \code{release_mem_region}, the two releases. With \code{devm_}
+the releases happen at unbind, so they disappear from the error path and from \code{remove} alike.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c10:ex:5}{What belongs in a device tree}{Design}
+
+\xpart{a} The device tree, as \code{reg}. Where the block sits is a fact about the SoC and the board,
+different on every design that uses the chip, so the driver must not contain it.
+
+\xpart{b} The device tree, as \code{interrupts} and \code{interrupt-parent}. Which line of which
+controller the device is wired to is again a fact about the board.
+
+\xpart{c} A module parameter, or nothing at all. The depth of a software FIFO trades memory against
+the risk of dropping data: a policy of this system's software, not a fact about the hardware, and
+the same board may want different depths for different uses. A constant in the driver is right
+until somebody needs to tune it, and a module parameter is right then. The \code{fifo-depth}
+property that \secref{c10:app:b6} reads is legitimate only if it describes the device's own
+hardware FIFO, as \code{QA_DEV_FIFO_DEPTH}, 16, does for \code{qa-dev}: that is hardware
+description.
+
+\xpart{d} Neither, normally. How many channels a chip has follows from which chip it is, and
+\code{compatible} already says that; the driver looks the number up from the match, typically in
+the \code{.data} of its \code{of_device_id} entry. A property is defensible only when the number
+depends on the board rather than on the chip, for instance on which inputs are wired to anything,
+and bindings usually describe that with a child node for each connected channel. That is what an
+answer of ``the device tree'' has to argue.
+
+\xpart{e} Not the device tree, which describes hardware. A module parameter at most, and on this
+kernel not even that: \code{dev_dbg} with dynamic debug, which \file{kernel/qa.config} enables,
+switches a driver's messages on and off at run time, call site by call site, with no parameter at
+all (\secref{c4:app:a7}).
+
+\xpart{f} The device tree: which crystal is fitted is a fact about the board. It is best described
+as a clock rather than as a bare number: a \code{fixed-clock} node carrying \code{clock-frequency},
+referenced from the device's \code{clocks} property, so that the driver asks the clock framework
+for the rate (Chapter~\ref{c11:ch}).
+
+\xpart{g} Neither. What a node in \file{/dev} is called is userspace's decision: the kernel's
+subsystem gives it a default name, and udev or mdev rules rename it or add links to suit the
+system. It is not a fact about the hardware, so it cannot be in the tree, and a parameter would move
+a naming policy into the driver. The nearest thing a device tree legitimately carries is an alias
+such as \code{serial0}, which numbers an instance and names no file.
+
+\xpart{h} The device tree describes the hardware, what would be true of the board under any
+operating system and any driver; everything that is a choice about how software uses that hardware
+belongs somewhere else.
+
+\xpart{i} Anything put in a device tree has to be supported for as long as a DTB containing it
+exists. The DTB may come from firmware that is never updated, so every later kernel must accept it:
+a property cannot be renamed, removed or given a new meaning, and a mistake is kept. The binding is
+also shared with every other consumer of the tree, the bootloader and other operating systems,
+which is why it is reviewed as hardware description. A module parameter is set on a command line or
+in a configuration file that ships in the same system image as the module that reads it, and
+changes with it: it is still an interface, visible under \file{/sys/module}, but the people who can
+change it are the people who ship the kernel. The device tree often belongs to somebody else
+entirely.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c10:ex:8}{Autoloading}{Design}
+
+\xpart{a} The four steps:
+\begin{enumerate}
+  \item \code{MODULE_DEVICE_TABLE} has modpost turn the match table into alias strings in the
+    \code{.ko}'s \code{.modinfo}.
+  \item \code{depmod} collects the aliases of every installed module into \file{modules.alias}.
+  \item The device's \code{uevent} carries a \code{MODALIAS=} string built from its node.
+  \item udev receives the uevent and runs \code{modprobe} with that string, which finds the module
+    through \file{modules.alias}.
+\end{enumerate}
+Step 4 is the one missing: there is no udev, the init script starts no \code{mdev}, and the kernel
+is built without a uevent helper (\code{CONFIG_UEVENT_HELPER} is not set). For your own module step
+2 is missing as well. It is loaded from \file{/lab} rather than installed under \file{/lib/modules},
+so the \file{modules.alias} on the target, which \file{ci/rootfs.sh} copies across with the kernel's
+own modules, has never heard of it.
+
+\xpart{b} Step 1, and through it step 2. Without it the \code{.ko} advertises no alias,
+\code{depmod} has nothing to collect, and \code{modprobe} given the device's \code{MODALIAS} finds no
+module, so the driver is never loaded automatically. Loaded by hand it works perfectly, because
+binding uses the \code{of_match_table} itself (\code{platform_match},
+\file{drivers/base/platform.c}:1345) whether or not it was exported, which is why the omission goes
+unnoticed on a target that loads everything by hand.
+
+\xpart{c} \code{OF_COMPATIBLE_0=qacademy,qa-dev-1.0} is the node's \code{compatible} property,
+copied into the uevent by \code{of_device_uevent} (\file{drivers/of/device.c}:238--239). QEMU wrote
+that property into the tree it generated, from \code{QA_DEV_DT_COMPATIBLE} in \file{qa-dev.h}, in
+\code{add_qa_dev_fdt_node} in \file{tools/qa-dev/integrate.py}. The \code{MODALIAS} line,
+\code{of:Nqa-devT(null)Cqacademy,qa-dev-1.0}, is built from the same node by \code{of_modalias}
+(\file{drivers/of/module.c}:29--50): \code{N} and the node's name, \code{T} and its
+\code{device_type}, which this node does not have, and \code{C} before each \code{compatible}
+string.
+
+\xpart{d} Two aliases, which modpost generates from the one entry in the table
+(\file{scripts/mod/file2alias.c}:366--381): \code{of:N*T*Cqacademy,qa-dev-1.0} and
+\code{of:N*T*Cqacademy,qa-dev-1.0C*}, the second of which also matches a node that lists further
+\code{compatible} strings after this one. \code{depmod} would collect them into
+\file{/lib/modules/6.12.30/modules.alias}, with an indexed copy in \file{modules.alias.bin}; here it
+has not, because the module is not installed there.
+
+\xpart{e} The steps are the same; what differs is where the identity comes from. A USB device
+describes itself: when it is plugged in, the USB core reads its descriptors, vendor, product and
+class, and the uevent carries a \code{MODALIAS=usb:v...p...} built from them, which the aliases of
+drivers declaring \code{MODULE_DEVICE_TABLE(usb, ...)} match. A device soldered to the board
+describes nothing: a block of registers at an address has no descriptors to read and no bus that
+could ask for them. Its identity has to come from outside, and the device tree is where it comes
+from: the node's \code{compatible} is what the kernel creates the device from and builds its
+\code{MODALIAS} out of. Without the node there is no device, no uevent and nothing to match.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c10:ex:9}{An address derived three ways}{Cross-check}
+
+\xpart{a} The bytes, which \secref{c10:app:b9} prints, grouped four to a cell, most significant
+first, with the parent's \code{ranges} alongside:
+
+\begin{console}
+reg         00 00 00 00  00 00 10 00
+            0x00000000   0x00001000
+ranges      00 00 00 00  00 00 00 00  0c 00 00 00  02 00 00 00
+            0x00000000   0x00000000   0x0c000000   0x02000000
+interrupts  00 00 00 00  00 00 00 70  00 00 00 04
+            0x00000000   0x00000070   0x00000004
+\end{console}
+
+\noindent The parent, \code{platform-bus@c000000}, declares one address cell and one size cell, so
+\code{reg} is child address \code{0x0} and size \code{0x1000}. In \code{ranges} the child address is
+one cell, \code{0x0}; the parent address is two, because the root declares
+\code{\#address-cells = <2>}, so it is \code{0x00000000_0c000000}; and the size is one cell,
+\code{0x02000000}. The device's window lies inside that range, so the physical address is
+\code{0x0C000000 + (0x0 - 0x0) =} \textbf{\code{0x0C000000}}, the size \code{0x1000}, and the window
+runs from \code{0x0C000000} to \code{0x0C000FFF}. The interrupt is type 0, an SPI; number
+\code{0x70}, which is 112; flags 4, level high. The GIC hardware interrupt is
+$112 + 32 = \mathbf{144}$, \code{0x90}.
+
+\xpart{b} The name is \code{c000000.qa-dev}, and the number in it is the physical address,
+\code{0xC000000}, not the \code{0x0} in \code{reg}. So the translation happened before any driver
+was involved: when the kernel created the device at boot, which translated \code{reg} through
+\code{ranges} and named the device from the result (\code{of_device_make_bus_id},
+\file{drivers/of/device.c}:302).
+
+\xpart{c} A correct driver prints \code{start} as \code{0xC000000} and \code{end} as
+\code{0xC000FFF}, which is the last byte of the window rather than one past it
+(\code{0xC000000 + 0x1000 - 1}), and the number \code{platform_get_irq} returned, which was 17 on the
+course's target (\secref{c10:app:a6}).
+
+\xpart{d} \textbf{They agree}, on \code{0x0C000000}. A hand figure of \code{0x0} took \code{reg} at
+face value, or took the first parent cell, \code{0x00000000}, as the base. That cell is only the
+high half of a two-cell address; the base is that cell and the next together,
+\code{0x00000000_0c000000}.
+
+\textbf{17 and 144} are both right because they are numbers in two different spaces
+(\secref{c8:app:a1}). 144 is the GIC's hardware number, fixed by the wiring. 17 is the Linux IRQ
+number, an index the kernel handed out when the GIC's IRQ domain first mapped hardware interrupt
+144, and it depends on how many mappings were made before it. In \file{/proc/interrupts} the first
+column, \code{17:}, is the Linux number; after the per-CPU counts come the controller,
+\code{GIC-0}, its hardware number, \code{144}, and the trigger, \code{Level}.
+
+\textbf{\code{-tx4}} reads each group of four bytes as one integer in the host's own byte order,
+which on this target is little-endian, so it byte-swaps every cell:
+
+\begin{console}
+reg         00000000 00100000
+ranges      00000000 00000000 0000000c 00000002
+interrupts  00000000 70000000 04000000
+\end{console}
+
+\noindent \code{-tx1}, reassembled most significant byte first, is correct, because device tree
+cells are big-endian on every machine (\secref{c10:app:b4}). The wrong answer is plausible because
+four of the nine cells are zero and read the same either way, and the rest still look like numbers:
+\code{0x0000000C} is as good an address as any to someone who has not seen the right one, and
+\code{0x00100000} is a perfectly ordinary 1\,MiB window. Only \code{0x70000000} as an interrupt looks
+absurd, and a reader who stops at the address never gets that far.
+
+\xpart{e} \textbf{The address} is in the device tree QEMU generated when it started, the file
+\code{dumpdtb} would have written (\secref{c10:app:b8}), which the kernel shows under
+\file{/sys/firmware/devicetree/base}: node \code{/platform-bus@c000000/qa-dev@0}, property
+\code{reg}, translated by the parent's \code{ranges}. The number itself is QEMU's choice: its
+\code{virt} machine puts the platform bus at \code{0x0C000000} (\file{hw/arm/virt.c}:187), and the
+first device placed on it goes at offset 0.
+
+\textbf{The second device.} With a private structure allocated for each device, each \code{probe}
+has its own registers, interrupt and counters, so the two \code{interrupts} attributes count two
+different devices, as the two lines of \file{/proc/interrupts} in the exercise do, 426 and 420.
+With a file-scope \code{static}, the second \code{probe} overwrites the first one's state: both
+attributes read the same numbers, the handler for interrupt 17 reads and acknowledges the second
+device's registers, so the first device's level-triggered line is never cleared, and unbinding
+either device unmaps registers the other still uses. The Chapter~\ref{c6:ch} driver could not have
+coped at all: it maps the one address its \code{base=} parameter names, a module can be loaded only
+once, and so it drives exactly one device, at an address somebody had to type.
+
+\textbf{\code{0xC001000}.} In Exercise~\ref{c6:ex:9} nothing was there: it is one page past the only
+device, inside the platform bus's window but backed by nothing, and reading it took the machine
+down. Now QEMU has placed a second \code{qa-dev} there, in the first free page-aligned slot on its
+platform bus (\file{hw/core/platform-bus.c}), with the next free interrupt, SPI 113, which is GIC
+145; and the same address is a working device. An address alone tells a driver nothing about what
+is at it, or whether anything is; only the description can.
+
+\textbf{A different SoC} needs nothing changed in the driver. That board's device tree supplies a
+node with the same \code{compatible} and its own \code{reg}, \code{ranges} and \code{interrupts},
+and the same source is rebuilt for that board's kernel. The driver changes only if the block itself
+changes, and then by gaining an entry in its match table.
+
+\xpart{f} The device tree is the board's description, written by whoever designed the board and
+supplied with it; the driver is shared by every board that carries the chip. An address in the
+driver is right on one board and wrong on all the others, and on those it claims and reads whatever
+lives there, which Exercise~\ref{c6:ex:9} showed can take the machine down. It also hides the fault
+it was meant to cover: a wrong tree should fail loudly, where its owner will see it and fix it, not
+be papered over by a second copy of the same fact that will drift from the first. And the fallback
+cannot do what it promises anyway. With no node there is no platform device and \code{probe} is
+never called, so the only case in which the fallback could run is one in which the tree did supply
+an address, and then the tree's address is the one to believe.

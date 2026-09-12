@@ -1,0 +1,224 @@
+% Section 5.4, from lectures/L05/appendix/c_exercises.md.
+
+\section{Exercises}
+\label{c5:sec:exercises}\label{c5:app:c}
+
+\begin{aside}
+Nine, ending with the Cross-check. Do them in order; Exercise~\ref{c5:ex:6} onwards need the modules
+from \S\ref{c5:app:b}.
+
+Where an exercise can be checked mechanically, a \textbf{Check yourself} line says how. Several have
+a plausible wrong answer that is worth walking into before you find it.
+
+\textbf{Solutions.} The exercises that are not Code are answered in \secref{sol:sec:c5}. The Code
+exercises have no solution: each is checked by running it, as its Check yourself line says.
+\end{aside}
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{The node and the number}{Recall}
+\label{c5:ex:1}
+
+\xpart{a} Your driver calls \code{alloc_chrdev_region} and gets major 243. A colleague hardcodes 243
+in a deployment script. Give two separate reasons that will eventually break.
+
+\xpart{b} What does \code{mknod /dev/spare c 243 0} do, given that \file{/dev/qa_fifo} already
+exists with the same numbers? What does opening it do?
+
+\xpart{c} Your driver loads, \file{/proc/devices} shows your name against a major, and
+\file{/dev/qa_fifo} does not exist. Which of the five init steps did you skip?
+
+\xpart{d} Conversely: the node exists, but opening it returns \code{ENXIO}. What does that tell you,
+and what does it rule out?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{The table}{Recall}
+\label{c5:ex:2}
+
+\xpart{a} \code{.owner = THIS_MODULE} is one line and easy to omit. Describe precisely what can go
+wrong without it, in terms of what a process is holding and what \code{rmmod} frees.
+
+\xpart{b} You implement \code{.read} and \code{.write} but not \code{.release}. Is that a bug? What
+is called instead?
+
+\xpart{c} You implement \code{.read} but not \code{.open}. Can userspace open the device?
+
+\xpart{d} After \code{cdev_add} returns, but before your init function returns, what can happen?
+Name the ordering rule this implies.
+
+\xpart{e} \code{release} is not called once per \code{close()}. When is it called, and construct a
+case where two \code{close()} calls produce one \code{release}.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{Return values}{Hand calculation}
+\label{c5:ex:3}
+
+For each, say what the driver should return, and what the userspace program will observe.
+
+\xpart{a} \code{read(fd, buf, 100)} with 40 bytes in the FIFO.
+
+\xpart{b} \code{read(fd, buf, 100)} with the FIFO empty.
+
+\xpart{c} \code{read(fd, buf, 0)} with 40 bytes in the FIFO.
+
+\xpart{d} \code{write(fd, buf, 100)} with 60 bytes of space free.
+
+\xpart{e} \code{write(fd, buf, 100)} with the FIFO full.
+
+\xpart{f} \code{read(fd, buf, 100)} where \code{buf} points at an unmapped page.
+
+Then: \textbf{g)} for \textbf{b)}, suppose the driver returns 0 instead. Write down what each of
+these does: \code{cat /dev/qa_fifo}; a program looping \code{while ((n = read(fd, b, 64)) > 0)}; and
+a program checking \code{if (n < 0) perror(...)}. Which of the three reports a problem?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{A sequence of reads}{Hand calculation}
+\label{c5:ex:4}
+
+A FIFO of capacity 8, created empty. Trace this sequence and give the return value of every call and
+the FIFO's level after it.
+
+\begin{console}
+1.  write(fd, "abcdefghij", 10)
+2.  read(fd, buf, 3)
+3.  write(fd, "klm", 3)
+4.  read(fd, buf, 100)
+5.  read(fd, buf, 100)
+\end{console}
+
+\xpart{a} Fill in the ten numbers.
+
+\xpart{b} After step 4, exactly which bytes are in \code{buf}, in order?
+
+\xpart{c} Step 3 succeeds even though step 1 could not fit everything. Explain why in terms of what
+step 2 did.
+
+\xpart{d} Which steps would behave differently if the ring buffer wasted one slot to distinguish
+full from empty? Give the old and the new return value for each.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{Where does this belong}{Design}
+\label{c5:ex:5}
+
+For each piece of information a driver might expose, choose \code{read()} on the device node, a
+\textbf{sysfs attribute}, \textbf{debugfs}, or an \textbf{ioctl}, and justify it in one sentence.
+
+\xpart{a} The stream of bytes the device produces.
+
+\xpart{b} The FIFO's configured capacity.
+
+\xpart{c} How many bytes have been dropped since load, for a field engineer to read.
+
+\xpart{d} A count of internal retries, useful only while you are debugging the driver.
+
+\xpart{e} An instruction to discard everything currently buffered.
+
+\xpart{f} The device's serial number.
+
+Then: \textbf{g)} two of your answers are an ABI you will maintain indefinitely and one is
+explicitly not. Which are which, and what follows for a product that ships?
+
+% ------------------------------------------------------------------------------------------
+\exercise{The ring buffer}{Code}
+\label{c5:ex:6}
+
+Write \file{lectures/L05/lab/qa_fifo.c} to the specification in \file{lectures/L05/lab/qa_fifo.h}
+and \S\ref{c5:app:b1}.
+
+\checkyourself load \file{qa_fifo.ko} and then \file{qa_fifo_kunit.ko} on the target and read
+\code{dmesg}. The suite must report \code{pass:10 fail:0}. \code{make test L=L05} does this for you
+and prints the summary line.
+
+Two things worth knowing before you start, both of which the suite checks and neither of which is
+obvious:
+\begin{itemize}
+  \item A FIFO of capacity 4 must hold \textbf{four} bytes.
+  \item Test 8 is the one that fails first for most people, and it is the eighth of ten, so seven
+    passing tests tell you very little.
+\end{itemize}
+
+% ------------------------------------------------------------------------------------------
+\exercise{The character device}{Code}
+\label{c5:ex:7}
+
+Write \file{lectures/L05/lab/qa_chardev.c} to \S\ref{c5:app:b2}.
+
+\checkyourself \code{make test L=L05} reports \textbf{PASSED} with eighteen checks, and the
+userspace tester prints \code{qa_fifo_test: 0 failure(s)}.
+
+\xpart{a} Before running the tester, load your module and record the major from \file{/proc/devices}
+and from \code{dmesg}. Reboot and do it again. Are they the same? Should a script rely on that?
+
+\xpart{b} Load the module twice without unloading. What happens, and where does the failure come
+from?
+
+\xpart{c} Deliberately omit \code{stream_open} from your \code{open} and rerun the tester. Which
+checks fail? Explain the result from \S\ref{c5:app:b2}, then find a system call that does behave
+differently without \code{stream_open}, and say what the difference means for a program that assumes
+a file offset means something.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{Reading the tests for what they miss}{Design}
+\label{c5:ex:8}
+
+Read \file{lectures/L05/lab/qa_fifo_kunit.c} and \file{lectures/L05/lab/user/qa_fifo_test.c} before
+answering.
+
+\xpart{a} The KUnit suite says at the top that it checks nothing about concurrency. Construct a
+specific interleaving of two \code{qa_fifo_put} calls that corrupts the buffer, and say which of the
+ten tests would notice. (The answer is none, which is the point.)
+
+\xpart{b} Name three other properties neither test suite checks. For each, say whether it would be
+worth testing and how you would do it.
+
+\xpart{c} The userspace tester exists as a compiled program rather than as shell. Name two checks in
+it that a shell script genuinely could not make, and say why.
+
+\xpart{d} Your driver leaks the FIFO if \code{class_create} fails. Would either suite catch it? What
+would?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent]{A byte count worked out twice}{Cross-check}
+\label{c5:ex:9}
+
+Predict a sequence of return values by hand, then have the machine produce them, and reconcile.
+
+\xpart{a} \textbf{By hand.} Your FIFO has the default capacity of 256. Predict the exact return
+value of every call in this sequence, and the level after each:
+
+\begin{console}
+1.  write of 200 bytes
+2.  write of 100 bytes
+3.  read  of 512 bytes
+4.  read  of 512 bytes
+5.  write of 300 bytes
+\end{console}
+
+\noindent Write down all five return values, all five levels, and the total number of bytes that
+will have passed through the device when the sequence ends.
+
+\xpart{b} \textbf{By machine.} Write a short program in \file{lectures/L05/lab/user/} that performs
+exactly that sequence against \file{/dev/qa_fifo} and prints each return value and \code{errno}.
+Anything you put in that directory is cross-compiled by \code{make build} and copied to \file{/lab}
+on the target, so you can run it there directly.
+
+\xpart{c} \textbf{Reconcile.} Compare your ten numbers against the machine's. Then answer:
+\begin{itemize}
+  \item Step 2 is the one people get wrong. What did you predict, what happened, and which contract
+    in \S\ref{c5:app:b2} decides it?
+  \item Did any call return a value you had classed as an error, or an error you had classed as a
+    value?
+  \item The total bytes through the device: does your figure count step 2's outcome the same way the
+    machine does?
+\end{itemize}
+
+\xpart{d} \textbf{Now change one thing.} Reload the module with \code{insmod ./qa_chardev.ko
+capacity=128} and run the same program without changing it. Which of the five return values change,
+and which do not? Explain each unchanged one.
+
+\xpart{e} Your program hardcodes 256 in its predictions; the shipped \code{qa_fifo_test} does not,
+and measures the capacity instead. Say what the shipped tester would report on a \code{capacity=128}
+device and what yours would, and draw the general lesson about tests that encode a configuration.
+
+\xpart{f} A colleague reports ``the device only accepted 56 bytes of my 300-byte write, it is
+broken''. Given the sequence above, say what actually happened, what their program should have done,
+and which single line of \S\ref{c5:app:a4} they had not read.

@@ -1,0 +1,304 @@
+% Solutions to the Chapter 9 exercises that are not code, from lectures/L09/appendix/c_exercises.md.
+% Exercises 9.6 and 9.7 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 9: Sleeping, Waiting, and Time}
+\label{sol:sec:c9}
+Answers to the exercises in \secref{c9:sec:exercises}. Exercises~\ref{c9:ex:6} and~\ref{c9:ex:7}
+are Code, and are checked on the target as their Check yourself lines say.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c9:ex:1}{Sleeping and spinning}{Recall}
+
+\xpart{a} The sleeping task is in \code{TASK_INTERRUPTIBLE}, \code{S} in \code{ps}, or
+\code{TASK_UNINTERRUPTIBLE}, \code{D}; it is not on the run queue, and it costs no CPU time at all,
+only its memory and the wake-up when it comes. The spinning task is in \code{TASK_RUNNING},
+\code{R}; it is on the run queue, and it costs a whole CPU while it has one, every time slice taken
+from a task with work to do (\secref{c9:app:a1}).
+
+\xpart{b} A signal, even \code{SIGKILL}, is acted on only when the task is on its way back to
+userspace, and a task in \code{TASK_UNINTERRUPTIBLE} is not woken by signals at all, only by an
+explicit wake. So the signal waits, pending, until whatever the task is waiting for finishes. That
+is usually I/O: a disk or network-filesystem request, a page being read in, a device operation. A
+\code{D} in \code{ps} says something the task depends on is not completing, a stuck device, a hung
+driver, a server that has gone away; the process is the symptom, and the cause is below it. On
+Linux such a task also counts in the load average.
+
+\xpart{c} \code{TASK_INTERRUPTIBLE}. A user can always interrupt or kill the reader, and your
+driver answers with \code{-ERESTARTSYS}. Put a reader in \code{TASK_UNINTERRUPTIBLE} to wait for a
+device that never produces data, and you have made the unkillable \code{D} process of part
+\textbf{b)} yourself. The uninterruptible state is for short waits that cannot be abandoned half
+way. (For a wait that only a fatal signal should end, there is a third, \code{TASK_KILLABLE}, which
+\code{wait_event_killable} uses.)
+
+\xpart{d} The task's state must be set to something other than \code{TASK_RUNNING} before the call.
+With the state still \code{TASK_RUNNING}, \code{schedule()} leaves the task on the run queue and
+may pick it again at once: a yield. And for the sleep ever to end, the task must be somewhere a
+wake-up can find it, on the wait queue the waker uses.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c9:ex:2}{The lost wakeup}{Recall}
+
+\xpart{a}
+\begin{enumerate}
+  \item The reader calls \code{fifo_empty()}, which finds the FIFO empty and returns true.
+  \item \textbf{The interrupt lands here}, after the test and before \code{set_current_state}. The
+    handler pushes a sample and calls \code{wake_up_interruptible}. The reader is on the queue but
+    still \code{TASK_RUNNING}, so there is nothing to wake, and the wake does nothing.
+  \item The reader sets \code{TASK_INTERRUPTIBLE} and calls \code{schedule()}, and leaves the run
+    queue with a sample waiting for it.
+  \item Nothing wakes it until the next \code{wake_up}: on a device that interrupts again, a period
+    later; if that was the last event, never.
+\end{enumerate}
+
+\xpart{b} Two instructions: the load inside \code{fifo_empty()} that finds the FIFO empty, and the
+store in \code{set_current_state}. That is nanoseconds, and how soon it is hit is the chance of one
+attempt times the attempts per second. An interrupt at an unrelated moment lands in a window $w$
+wide, in a period of 1 ms, with probability $w / 1$ ms, of the order of a few in a million for a few
+nanoseconds; and a reader that blocks for each sample offers the window up to a thousand times a
+second. That is a few chances in a thousand every second: on paper, minutes of continuous running.
+On a real machine it depends on how long the window really lasts and on when the reader's sleeps
+fall relative to the interrupts, and it is found by running it. Either way it is found in a test
+run, not once in a product's lifetime.
+
+\xpart{c} \code{long __int = prepare_to_wait_event(&wq_head, &__wq_entry, state);}. It puts the task
+on the queue and sets its state, under the queue's lock, before the condition is tested; a
+\code{wake_up} that comes after it finds a task to wake (\secref{c9:app:a3}).
+
+\xpart{d} \textbf{The lost wakeup}: the test has to happen after the task is queued, so the macro
+must be able to evaluate it there, inside the loop; a variable's value passed in would be read once,
+at the call, before queueing, which is exactly the bug. \textbf{After a wake}: a wake does not mean
+the condition is true, because another reader may have taken the data or the wake may be spurious,
+so the macro evaluates the expression again every time round the loop.
+
+\xpart{e} It must be \textbf{cheap}, and \textbf{free of side effects}, because it is evaluated once
+before the task is queued and again after every wake, as many times as that takes. It is also
+evaluated with the task already in \code{TASK_INTERRUPTIBLE}, so it must not sleep: a sleeping call
+there resets the state, and \code{CONFIG_DEBUG_ATOMIC_SLEEP} warns \code{do not call blocking ops
+when !TASK_RUNNING}.
+
+\xpart{f} It measures the wrong thing. What decides how often the bug fires is not the width of the
+window but the chance of one attempt times the number of attempts: the window is offered every time
+a reader sleeps, a thousand times a second, on every unit shipped, for years, and a chance that is
+rare per attempt is certain in aggregate. Rare is also the worse outcome: a bug that fires once a
+week passes every test and cannot be reproduced when it is reported. And a window you can point at
+is a bug whatever its width, when the fix, queueing before testing, costs nothing.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c9:ex:3}{Jiffies}{Hand calculation}
+
+\xpart{a} $1{,}000{,}000 / 250 = \mathbf{4{,}000}$ us, 4 ms.
+
+\xpart{b} With \code{HZ} dividing 1,000 exactly, \code{msecs_to_jiffies(m)} is $(m + 3) / 4$ in
+integer arithmetic: $(1 + 3)/4 = 1$, $(4 + 3)/4 = 1$ and $(10 + 3)/4 = 3$. It rounds \textbf{up},
+and that matters because a timeout must never be shorter than it was asked to be. Rounded down,
+\code{msecs_to_jiffies(1)} would be 0, and \code{msleep(1)}, which sleeps while its count of
+jiffies is not zero, would not sleep at all; and 10 ms would become 2 jiffies, 8 ms.
+
+\xpart{c} One jiffy more than \code{msecs_to_jiffies(n)}: \code{msleep(1)} is $(1 + 1) \times 4 =
+\mathbf{8}$ ms, \code{msleep(4)} is also $(1 + 1) \times 4 = \mathbf{8}$ ms, and \code{msleep(10)} is
+$(3 + 1) \times 4 = \mathbf{16}$ ms. The course measured 8,000, 8,000 and 15,998 us
+(\secref{c9:app:b4}). The extra jiffy is not in \code{msleep}, which passes
+\code{msecs_to_jiffies(n)} to \code{schedule_timeout} unchanged; it is the timer wheel's, which
+rounds every expiry up by a jiffy so that a timer armed part of the way through a tick never fires
+early (\code{calc_index} in \file{kernel/time/timer.c}). Each call in a loop starts just after the
+tick that woke the one before, so it sleeps $n + 1$ whole jiffies.
+
+\xpart{d} \code{msleep(1)} and \code{msleep(4)}, 8 ms each. The loop runs eight times slower than
+its author believes: 1,000 iterations take 8 s, not 1 s. Asking for less than a jiffy buys nothing.
+
+\xpart{e} At \code{HZ=1000} a jiffy is 1 ms and \code{msecs_to_jiffies(n)} is $n$: \code{msleep(1)}
+is $1 + 1 = 2$ ms, \code{msleep(4)} is $4 + 1 = 5$ ms, and \code{msleep(10)} is $10 + 1 = 11$ ms.
+
+\xpart{f} \code{>} breaks when the counter wraps between computing the deadline and comparing
+against it. Computed 50 ticks before the wrap, \code{jiffies + 125} wraps round to 75, and
+\code{jiffies > timeout} is true at once: the timeout expires immediately. Computed so that
+\code{jiffies} wraps first, the comparison is false until the counter comes all the way round, and
+the timeout never expires. \code{time_after} compares the signed difference, which is right as long
+as the two are less than half the range apart. The wrap comes every $2^{32} / 250 = 17{,}179{,}869$
+s, \textbf{198.8 days}; but the first one comes \textbf{five minutes after boot}, because the kernel
+starts the count at \code{INITIAL_JIFFIES}, $-300 \times$ \code{HZ}, on purpose, so that code with
+this bug fails in its first five minutes rather than after half a year. (On the course's 64-bit
+target \code{jiffies} itself never wraps; its low 32 bits still do, five minutes after boot, which
+catches code that keeps it in a \code{u32}.)
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c9:ex:4}{Choosing a delay}{Hand calculation}
+
+\xpart{a} \textbf{\code{udelay(2)}.} Inside a spinlock nothing may sleep, and 2 us of busy-waiting
+costs less than any sleep would to arrange.
+
+\xpart{b} \textbf{\code{usleep_range}} between reads of the bit, for example
+\code{usleep_range(100, 200)}, with an overall timeout; \code{readl_poll_timeout} is that loop
+already written. \code{probe} may sleep, \code{udelay} would burn the whole 500 us, and
+\code{msleep(1)} would cost 8 ms a poll on this kernel.
+
+\xpart{c} \textbf{\code{msleep(100)}}, in process context: \code{msecs_to_jiffies(100)} is 25, so
+the call takes 26 jiffies, 104 ms, and a quantum of 4 ms is noise at that length. If the retry must
+not block its caller, a timer.
+
+\xpart{d} \textbf{None of them} (this is the trick). A hard interrupt handler may not sleep, and a
+busy-wait of 5 ms, \code{mdelay(5)}, is legal but spends 5 ms with interrupts disabled on that CPU.
+Do not wait in the handler: acknowledge, and do the waiting in the threaded half, or arm a timer to
+do the next step 5 ms later.
+
+\xpart{e} \textbf{A timer}, a \code{timer_list} armed 2 s ahead and cancelled when the device
+answers: a timeout that is usually cancelled and whose precision is irrelevant is the case the
+wheel exists for (\secref{c9:app:b5}).
+
+\xpart{f} \textbf{\code{usleep_range(50, 50)}}: process context may sleep, and with no slack an
+hrtimer is the most accurate way to. The alternative is \code{udelay(50)}, and the course's
+measurements are its argument: \code{usleep_range(100, 100)} took 307 us and \code{udelay(100)} 112
+(\secref{c9:app:b4}), so on this target a sleep carries about 200 us of wake-up overhead. If the
+requirement is 50 us and not 250, \code{udelay} is the one that delivers it, at the price of 50 us
+of a CPU every time.
+
+\xpart{g} \textbf{d)}: of the four ways to wait it offers, none is right in a hard interrupt
+handler, and the right answer is not to wait there.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c9:ex:5}{The four cases of \code{read}}{Design}
+
+\xpart{a} \textbf{160.} The count is in bytes and a sample is 32 bits, so 100 samples is 400 bytes,
+and \code{read} returns the 40 samples there are, 160 bytes. The program sees a short read at once,
+and calls \code{read} again if it wants more. (Had the 100 been bytes, 25 whole samples: 100.)
+
+\xpart{b} \textbf{Nothing yet}: the driver sleeps in \code{wait_event_interruptible} until the
+handler adds a sample and wakes it, then returns the whole samples available, at least 4 bytes. The
+program sees \code{read} block for up to a period, about a millisecond on a running \code{qa-dev},
+and then return a positive count.
+
+\xpart{c} \textbf{\code{-EAGAIN}}, at once. The program sees $-1$ with \code{errno} set to
+\code{EAGAIN}, ``Resource temporarily unavailable''.
+
+\xpart{d} \textbf{\code{-ERESTARTSYS}}: the wait returns it because a signal is pending, and the
+driver passes it on. The program never sees it. Ctrl-C sends \code{SIGINT}, whose default action
+ends the process, so \code{read} never returns and the program dies, which is what Ctrl-C is for. A
+program with a handler installed with \code{SA_RESTART} runs the handler and has its \code{read}
+restarted without noticing; one whose handler has no \code{SA_RESTART} sees $-1$ with \code{errno}
+set to \code{EINTR}.
+
+\xpart{e} The driver now has something that can wake a reader, the interrupt handler of
+Chapter~\ref{c8:ch}, and a way to sleep without losing the wake. Chapter~\ref{c5:ch} had neither:
+it could not wait correctly, so the only honest answers were the data or ``nothing now'', and 0
+would have said ``nothing ever''.
+
+\xpart{f} \textbf{\code{-EINTR}} takes the decision away from the kernel. The program sees
+\code{EINTR} whenever a handled signal arrives, even one installed with \code{SA_RESTART}, which
+asked for the call to be restarted; a program that does not retry on \code{EINTR} then fails for
+no reason it can see, whenever a \code{SIGCHLD} or a timer signal happens by. \textbf{Ignoring the
+return value} depends on what comes next. If the code goes on to take data from a FIFO that is
+still empty, it returns 0, end of file, and the program stops as if the device had finished. If it
+loops back to wait, the signal is still pending, so every wait returns at once and the
+\code{read} spins in the kernel at full speed without ever returning, and a signal is delivered
+only on the way back: a reader that cannot be killed (\secref{c9:app:a:-erestartsys}).
+
+\xpart{g} End of file: no more data, ever. \code{cat /dev/qa_wait} exits at once with status 0
+having printed nothing, as if the device had finished, and so does any loop that reads until
+\code{read} returns 0.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c9:ex:8}{A timer instead of an interrupt}{Design}
+
+\xpart{a} Load the module with \code{ENABLE} set and \code{IRQ_EN} clear, and arm a
+\code{timer_list}. Its callback reads the device's FIFO, puts the samples into the driver's FIFO
+under the spinlock, wakes the readers, and re-arms itself. The callback runs in softirq context
+(\secref{c9:app:b5}): it may touch registers, take a spinlock and wake a queue, and may not sleep,
+take a mutex, allocate with \code{GFP_KERNEL} or call \code{copy_to_user}. What moves: the lock's
+process-context side must now disable softirqs as well, \code{spin_lock_bh} or the \code{irqsave}
+it already has, and anything that sleeps stays in \code{read}. Two details. 4 ms is one jiffy at
+\code{HZ=250}, the finest a \code{timer_list} does, and it must be re-armed from its previous
+expiry, \code{mod_timer(&t, t.expires + 1)}: re-armed from \code{jiffies + 1} it polls every
+8 ms, for the same reason \code{msleep(1)} takes two jiffies. And on unload it re-arms itself, so
+it is stopped with \code{timer_shutdown_sync}, which also refuses any later re-arm.
+
+\xpart{b} The resolution is no longer the jiffy: any period, 4 ms or 1 ms, exactly, and periodic
+from its previous expiry with \code{hrtimer_forward_now} and \code{HRTIMER_RESTART}. The callback
+runs in hard interrupt context, which is the default on this kernel, so it is more restricted than
+the \code{timer_list}'s: the lock shared with \code{read} must be taken \code{irqsave}, and its time
+is interrupt time again. (A \code{_SOFT} mode moves it to softirq, and under \code{PREEMPT_RT} any
+hrtimer not marked \code{_HARD} is moved there.)
+
+\xpart{c} With the \code{timer_list} the sample waits in the device's FIFO until the next poll, up
+to 4 ms, more if the timer is late. With the hrtimer, up to its period, which can be as short as the
+wake-ups you are willing to pay for. With the interrupt it is taken when it arrives. Polling adds,
+on average, half its period to the latency of every sample.
+
+\xpart{d} Sixteen samples at one a millisecond fill the FIFO in 16 ms, and the seventeenth, 16 ms
+after the first undrained one, is dropped: two polls must never be more than \textbf{16 ms} apart,
+and the nominal period has to leave room for how late the timer can be. With a FIFO of 4 it is
+\textbf{4 ms}, exactly one jiffy, which a \code{timer_list} cannot promise, since it may fire a
+jiffy late; that needs an hrtimer, or the interrupt.
+
+\xpart{e} Poll when you know when the data will be there, or when it is always there: a steady
+stream in which every poll finds work, which is why network drivers switch to polling under load.
+Poll too when the device cannot interrupt. Use the interrupt when events are sporadic, or when
+latency matters: a poll that usually finds nothing is pure cost, and its period is added latency. A
+timer is what you use when nothing tells you (\secref{c9:app:b:choosing}).
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c9:ex:9}{A millisecond that is not a millisecond}{Cross-check}
+
+\xpart{a} One jiffy is 4 ms, and each \code{msleep} is one jiffy more than \code{msecs_to_jiffies}
+gives:
+
+\begin{narrowtable}{@{}llr@{}}
+  \thead{Call} & \thead{Jiffies} & \thead{Predicted} \\
+  \midrule
+  \code{msleep(1)} & $1 + 1 = 2$ & 8,000 us \\
+  \code{msleep(4)} & $1 + 1 = 2$ & 8,000 us \\
+  \code{msleep(10)} & $3 + 1 = 4$ & 16,000 us \\
+  \code{usleep_range(1000, 1000)} & not quantised & a little over 1,000 us \\
+\end{narrowtable}
+
+\noindent \code{usleep_range} uses an hrtimer, so it costs the request plus the time to take the
+timer interrupt and switch the task back in; the model gives no figure for that.
+
+\xpart{c}
+\begin{itemize}
+  \item \code{msleep(1)}: 8,000 us for 1,000 asked, \textbf{eight times}. The predictions of part
+    \textbf{a)} expect it exactly; a prediction from ``at least one jiffy'' alone says 4 ms, out by
+    two. Followed as written, the prediction furthest from its measurement is
+    \code{usleep_range}'s: 1,000 us against 1,443, a factor of 1.44 (\secref{c9:app:b4}).
+  \item \code{msleep(1)} and \code{msleep(4)}, 8,000 us each. Not a bug in the measurement or in
+    \code{msleep}, but in the expectation: \code{msleep} promises at least what it was asked, in
+    jiffies, and 1 ms and 4 ms are both one jiffy.
+  \item \code{msleep} passes \code{msecs_to_jiffies(n)} to \code{schedule_timeout} with nothing
+    added. The sentence is ``at least \code{@timeout} jiffies are guaranteed to pass before the
+    routine returns'', from its comment in \file{kernel/time/timer.c}, for the uninterruptible
+    sleep \code{msleep} uses. The call arrives part of the way through a jiffy, and counting that
+    partial jiffy as one would return early, so the timer must fire at the $(n + 1)$th tick after
+    the call; the timer wheel does it by rounding every expiry up by one jiffy. In a loop each call
+    starts just after a tick, and so waits $n + 1$ whole jiffies.
+  \item A high-resolution timer, programmed on the hardware timer rather than on the jiffy wheel.
+    What it gave up is the range: \code{usleep_range(1000, 1000)} leaves the kernel no slack, so it
+    must program a wake-up for this sleep alone rather than fold it into one already due, which is
+    the saving the range exists for.
+\end{itemize}
+
+\xpart{d} \code{msecs_to_jiffies(5)} is $(5 + 3)/4 = 2$, so \code{msleep(5)} takes $2 + 1 = 3$
+jiffies, \textbf{12,000 us}. That is the test that separates the accounts: ``one jiffy more than
+\code{msecs_to_jiffies}'' predicts 12 ms, where ``twice the rounded-up request'' would predict 16.
+The course does not publish this measurement; the prediction is 12,000 us.
+
+\xpart{e} At \code{HZ=1000}: \code{msleep(1)} 2 ms, \code{msleep(4)} 5 ms, \code{msleep(10)} 11 ms,
+and \code{usleep_range(1000, 1000)} a little over 1 ms, as before. The three \code{msleep}s change
+and \code{usleep_range} does not. \code{msleep} is quantised: it costs its request rounded up to
+jiffies, plus one, and the jiffy is \code{HZ}'s. \code{usleep_range} is not: it costs its request
+plus a wake-up overhead that has nothing to do with \code{HZ}.
+
+\xpart{f} On this kernel $1{,}000 \times 8$ ms, \textbf{8 s}; at \code{HZ=1000}, $1{,}000 \times 2$
+ms, \textbf{2 s}. Written as \code{msleep(1000);} it takes one second on both, to within the timer
+wheel's rounding. At that length the wheel places the timer in a coarser level and rounds its expiry
+up to that level's step: 8 jiffies at \code{HZ=250}, so between 1,000 and 1,032 ms, and 64 jiffies
+at \code{HZ=1000}, so between 1,000 and 1,064 ms. Either is a second, for a comment.
+
+\xpart{g} Put what was measured and how: average durations over 200 repetitions on an idle QEMU
+guest, kernel 6.12.30 with \code{PREEMPT} and \code{HZ=250}, and the structure that is not a
+measurement, that \code{msleep(n)} waits at least $n$ ms and in a loop costs
+\code{msecs_to_jiffies(n)} plus one jiffies. Refuse to claim any maximum or worst case, and any
+figure under load or on other hardware: an average over an idle machine says nothing about the
+tail, and these numbers contain the emulator. Measure instead the whole response, from the event to
+the driver's action, as a distribution over a long run under realistic load, on the product's own
+hardware and configuration, and report its high percentiles and the worst value seen, with a trace
+of what caused the outliers; and even then a measured maximum is an observation, not a bound.
+Chapter~\ref{c12:ch} is that measurement.

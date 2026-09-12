@@ -1,0 +1,152 @@
+% Appendix, from exam/README.md: what the two written papers are for, what they cover, the
+% conventions they assume, and how they are marked.
+
+\chapter{The Self-Assessment Papers}
+\label{exam:ch:about}
+
+This appendix and the four after it hold two complete four-hour papers for \emph{Embedded Linux and
+Kernel Drivers}, with model answers. Appendices~\ref{exa:ch:paper} and \ref{exb:ch:paper} are the
+papers, questions only; Appendices~\ref{ansa:ch:answers} and \ref{ansb:ch:answers} are their model
+answers, with marks.
+
+\section*{What these are for}
+The book has \textbf{no exam and nothing is marked}. What you get instead is a lab per chapter,
+checked on the target by \code{make test}, and eight to ten exercises per chapter ending in a
+Cross-check that makes you compute a number by hand and then measure it.
+
+These papers do not replace that. \textbf{They are here to test your own skills and knowledge,
+nothing more.} They gate nothing, they are not a qualification, and no part of the book requires
+them. Nothing in the companion repository depends on them, and \code{make test} does not know they
+exist. They are useful where a written result is wanted anyway, for a certifying employer or a
+formal course credit, and useful on their own for finding out what you can reconstruct with nothing
+in front of you.
+
+\textbf{Take one after the last chapter.} Both papers draw on all twelve chapters, so sitting one
+partway through examines material you have not read yet, and the result says more about how far you
+have read than about what you have understood. The intended point is after Chapter~\ref{c12:ch},
+once the driver probes off a device tree, services interrupts, blocks readers correctly, registers
+with two subsystems, and has had its latency characterised.
+
+\section*{The two papers}
+Both cover the whole book, Chapters~1 to 12, and share no question. Either can be used alone; use
+both as a main sitting and a resit, or in alternate years. They do \textbf{not} weight the chapters
+identically, and that is deliberate.
+
+\subsection*{Paper A}
+\begin{booktable}{@{}p{4.6em}Lp{5em}r@{}}
+  \thead{Question} & \thead{Topic} & \thead{Chapters} & \thead{Marks} \\
+  \midrule
+  1 & The image, and the licence on it & 1 & 12 \\
+  2 & Asking a running kernel a question & 2 & 8 \\
+  3 & Configuring a kernel, and what it costs & 3 & 10 \\
+  4 & A module, written out & 4 & 12 \\
+  5 & The character device contract & 5 & 12 \\
+  6 & An address, translated and mapped & 6, 10 & 12 \\
+  7 & A race, traced & 7 & 10 \\
+  8 & An interrupt, acknowledged & 8 & 10 \\
+  9 & A reader put to sleep & 9 & 8 \\
+  10 & Frameworks, and the trade & 11, 12 & 6 \\
+  \midrule
+    & & & \textbf{100} \\
+\end{booktable}
+
+\subsection*{Paper B}
+\begin{booktable}{@{}p{4.6em}Lp{5em}r@{}}
+  \thead{Question} & \thead{Topic} & \thead{Chapters} & \thead{Marks} \\
+  \midrule
+  1 & What leaves the building, and when it does not & 1 & 10 \\
+  2 & A number that is not what it says & 2, 9 & 12 \\
+  3 & An option that did not survive & 3 & 10 \\
+  4 & A module that will not load & 4 & 12 \\
+  5 & A read that returns zero & 5, 9 & 12 \\
+  6 & A mapping that is wrong & 6 & 10 \\
+  7 & A deadlock that has not happened & 7 & 12 \\
+  8 & An interrupt that never stops & 8 & 10 \\
+  9 & A driver that finds its own hardware & 10, 11 & 6 \\
+  10 & Worse average, better maximum & 12 & 6 \\
+  \midrule
+    & & & \textbf{100} \\
+\end{booktable}
+
+\textbf{Paper A leans towards tracing a mechanism forwards}: an address translated through a device
+tree, a module written from nothing, a \code{read()} traced through its four cases, an interrupt
+acknowledged in the right order.
+
+\textbf{Paper B leans towards the conditions under which the mechanism stops working}: an option
+silently dropped by \code{olddefconfig}, a module refused at load, a read that returns end of file
+when it meant ``not yet'', a mapping that reads plausible zeros, a deadlock reported by a tool
+without the deadlock occurring.
+
+\section*{Code on a written paper}
+Both papers \textbf{do ask a candidate to write kernel C}. That is deliberate. This book teaches by
+building a driver: the specification of every lab is prose in its chapter and a test suite that
+tells you whether what you wrote satisfies it, and a paper that avoided code entirely would be
+examining a different course.
+
+The code questions come in two shapes, and neither is a typing exercise:
+\begin{itemize}
+  \item \textbf{Write one function.} An init function, a \code{read()}, an interrupt handler. The
+    answers are ten to twenty lines each. What carries the marks is the algorithm: the error path,
+    the return value, the accessor used, the context the code is running in. Not the syntax.
+  \item \textbf{Find what is wrong.} Both papers hand over a listing that compiles and does
+    something other than what its author intended. The defects are the ones the chapters single
+    out.
+\end{itemize}
+Both papers state in their rubric that answers may be written in kernel C \textbf{or in unambiguous
+pseudocode}, and that nothing is marked on syntax. A missing semicolon costs nothing. A
+\code{copy_to_user} replaced by \code{memcpy} costs everything.
+
+\section*{Conventions the papers assume}
+Both papers state these in their own rubric, so a candidate never has to have read this appendix.
+\begin{itemize}
+  \item \textbf{The kernel is 6.12 as pinned by the course.} Where an interface has changed within
+    recent memory the paper says which version it means, because Chapters~\ref{c3:ch}, \ref{c5:ch}
+    and~\ref{c11:ch} all make the point that the internal API is not stable.
+  \item \textbf{\code{HZ} is 250} unless a question says otherwise, so a jiffy is 4 ms.
+  \item \textbf{The device is \code{qa-dev}}, whose register map is the one in the course, and any
+    register a question depends on is quoted in the question.
+  \item \textbf{Only the values nobody could be expected to carry are supplied}: the SPI base of 32,
+    the page size, a register offset where one is needed. Address translations, jiffy arithmetic and
+    latency budgets are derived, because deriving them is the examinable skill.
+  \item \textbf{``State the consequence''} means naming the defect earns half the marks and saying
+    what it does to the running system earns the other half. ``This is wrong'' scores nothing.
+  \item \textbf{Where a question asks you to find defects, the number is stated.} Listing more is
+    not penalised, but only the stated number is marked, so put your strongest answers first.
+\end{itemize}
+
+\section*{Marking}
+Every model answer is written to be marked by somebody who has read the chapters and does not
+otherwise write kernel code, so each carries the reasoning rather than the answer alone. Marks are
+shown per part.
+
+Three conventions worth agreeing before a paper is marked:
+\begin{itemize}
+  \item \textbf{Method carries the marks.} A correct approach with an arithmetic slip in it is worth
+    more than a correct number with no working, and both papers are built so that later parts
+    consume earlier answers. Follow through an error rather than penalising it twice. A candidate
+    who translates a device tree address wrongly and then maps their own wrong address correctly has
+    demonstrated the examinable skill.
+  \item \textbf{The named traps are worth full marks on their own.} Several questions exist entirely
+    to see whether a candidate avoids one specific mistake: \code{read} returning 0 when it meant
+    ``not yet'', a \code{memcpy} where \code{copy_to_user} was needed, dividing \file{/proc/stat} by
+    \code{HZ} rather than by \code{USER_HZ}, taking \code{reg} at face value without translating
+    through \code{ranges}, concluding from a clean unlocked run that a lock is unnecessary. Where a
+    model answer flags one of these, a candidate who walks into it loses those marks and no others.
+  \item \textbf{The discussion parts are not decoration.} ``State the consequence'' and ``say what
+    this is blind to'' are where the book's actual content is, and a paper marked only on the code
+    and the arithmetic would pass a candidate who has understood none of it. Paper~B in particular
+    is mostly these.
+\end{itemize}
+
+\textbf{The code questions are answered as checklists, not as listings.} Where a paper asks a
+candidate to write a function, the model answer states what a correct answer must contain and what
+each element is worth, rather than printing a reference implementation. That is deliberate twice
+over: it is how these answers are actually marked, since two correct answers will not look alike;
+and a worked listing here would be a published solution to the lab that asks for the same thing,
+and the book publishes none for its labs or its Code exercises. Appendix~\ref{sol:ch:solutions}
+answers only the exercises that are not code.
+
+\textbf{Where a model answer says a candidate may reasonably disagree, they may.} Two questions ask
+for a judgement rather than a fact: Paper~A's Question~10(c) and Paper~B's Question~8(d). Both
+answers state a position and say what an answer arguing the other way must contain to earn the
+marks.

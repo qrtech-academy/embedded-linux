@@ -1,0 +1,45 @@
+% Chapter 3, typeset from lectures/L03: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{The Kernel: Architecture, Source Tree, and Configuration}
+\label{c3:ch}
+
+{\large\itshape What the kernel is as a program, how its source is arranged, and how you choose what
+goes into the one you build.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item The kernel as a program: one address space, no libc, and the only public interface it has.
+  \item The subsystem map, and where in the tree each of them lives.
+  \item Mainline, stable, long-term stable, and the vendor tree your SoC actually shipped with.
+  \item Kconfig: what a symbol is, what \code{select} does that \code{depends on} does not, and
+    \code{=y} against \code{=m}.
+  \item Kbuild: \code{ARCH}, \code{CROSS_COMPILE}, \code{O=}, and what \code{Image} is that
+    \code{vmlinux} is not.
+  \item Turn one config option off and measure what it was worth.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is about the kernel as a program and as a source tree, and about how you choose what
+goes into the one you build. It explains why a program with no \code{main} and one shared address
+space fails differently from a process, why the system call interface never changes while
+everything behind it may, and how twenty-four million lines of C are arranged so that you can find
+the one file you need. Then it turns to configuration: what a Kconfig symbol is, why \code{select}
+and \code{depends on} behave oppositely, when a driver has to be built in rather than as a module,
+and how a \code{.config} becomes an \code{Image}.
+
+Read \secref{c3:app:a} first; it is the kernel as a program, and its source tree. \Secref{c3:app:b}
+is Kconfig and Kbuild, and ends with the method for predicting what one option costs. The lab is
+specified in Exercise~\ref{c3:ex:6}: a shell script that reports what the running kernel was
+configured with, and admits it when the configuration is not there to read. The exercises in
+\secref{c3:sec:exercises} end with the Cross-check: predict what \code{CONFIG_IKCONFIG} costs from
+the object it builds, remove it, rebuild, and measure three artefacts that give three different
+answers, all of them correct. Start it early, because the rebuild takes about twenty minutes. The
+lab is done when \code{make test L=L03} reports \textbf{PASSED} with seventeen checks, and still does
+once the Cross-check has turned \file{/proc/config.gz} off.
+
+\input{chapters/03/the_kernel_and_its_tree}
+\input{chapters/03/kconfig_and_kbuild}
+\input{chapters/03/summary}
+\input{chapters/03/exercises}

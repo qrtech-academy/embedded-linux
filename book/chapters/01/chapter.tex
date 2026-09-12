@@ -1,0 +1,53 @@
+% Chapter 1, typeset from lectures/L01: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{Embedded Linux, and the Licence You Ship With It}
+\label{c1:ch}
+
+{\large\itshape What an embedded Linux system is made of, how it assembles itself at power-on, and
+what the licences on the pieces oblige you to hand over.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item What is actually on the flash of a product that runs Linux, in four pieces, and what each
+    one does at power-on.
+  \item The boot chain from the on-chip ROM to the first userspace process, and the three steps
+    QEMU's \code{-kernel} lets you skip.
+  \item Cross-compilation: why \code{gcc} on your laptop is the wrong compiler, and what a sysroot
+    is for.
+  \item Buildroot and Yocto in one section, which is all they get in this course, and why.
+  \item Copyleft against permissive, and the one question a licence actually answers.
+  \item The kernel's syscall exception, \code{MODULE_LICENSE}, and a licence boundary the linker
+    enforces.
+  \item \code{make kernel}, \code{make qemu}, \code{make rootfs}, \code{make boot}, and a shell on a
+    machine you just built.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is about what a product that runs Linux is made of, and what shipping it obliges you
+to hand over. It takes the system apart into four pieces, the bootloader, the kernel, the root
+filesystem and the toolchain that builds the other three, and follows the chain of programs that
+assembles them between power-on and the first userspace process, including the three steps QEMU's
+\code{-kernel} skips and what skipping them costs. It explains why the compiler on your laptop is
+the wrong one and what a sysroot is for. Then it asks the one question a licence answers, what you
+must give somebody along with a binary, works it through for the licences an embedded product
+carries, and follows the two boundaries that matter for the rest of the book: the syscall exception,
+which is why your application is yours, and \code{EXPORT_SYMBOL_GPL}, where the argument about
+modules becomes a build error.
+
+Read \secref{c1:app:a} first; it is the anatomy and the boot chain, and it ends with the machine
+this course builds, piece by piece and with its sizes, in \secref{c1:app:a7}. That machine is
+what the lab checks: what \code{make kernel}, \code{make qemu}, \code{make rootfs} and
+\code{make boot} produce, rather than code you write. \Secref{c1:app:b} is the
+licensing material, the one section in the book with no code in it and the one most likely to come
+up in a design review. The exercises in \secref{c1:sec:exercises} end with the Cross-check: classify
+the licences of ten kernel source files by hand, predict the whole directory from them, then run
+your own audit script over it and reconcile the two, which will not agree. The lab is done when
+\code{make test L=L01} reports \textbf{PASSED}, with all nine of the target's checks on the machine
+you built, from the kernel version to the \code{qa-dev} node in its device tree.
+
+\input{chapters/01/the_four_pieces}
+\input{chapters/01/licences}
+\input{chapters/01/summary}
+\input{chapters/01/exercises}

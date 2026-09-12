@@ -1,0 +1,59 @@
+% Section 3.3, from lectures/L03/README.md: what you should be able to do afterwards, the
+% questions to test yourself, and the next lecture.
+
+\section{Review}
+\label{c3:sec:review}
+
+\needspace{6\baselineskip}
+\subsection*{What you should be able to do now}
+After this chapter, you should be able to:
+\begin{itemize}
+  \item Say what ``monolithic kernel'' claims, and what it does not claim.
+  \item Explain why the syscall interface is stable and the internal API is not, and what follows
+    for a driver you maintain out of tree.
+  \item Navigate to a named subsystem in the source tree without searching.
+  \item Read a Kconfig entry and say under what circumstances the option will and will not appear.
+  \item Say what \code{select} does that \code{depends on} does not, and why that can produce a
+    broken \code{.config}.
+  \item Choose \code{=y} or \code{=m} for a given driver and defend the choice.
+  \item Cross-build a kernel with a config fragment, and say where each of \code{Image},
+    \code{vmlinux} and the modules ends up.
+  \item Measure what a config option costs, in image bytes and in modules.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Questions to test yourself}
+\begin{enumerate}
+  \item Why can the driver for the device holding your root filesystem not be a module?
+  \item Your \code{.config} contains an option you never selected and whose \code{depends on} line
+    is not satisfied. How did it get there?
+  \item What is the difference between \code{vmlinux} and \code{Image}, and which one does the
+    bootloader load?
+  \item \code{make defconfig} for arm64 produces a configuration for how many machines? What does
+    that tell you about how much of your build you are going to throw away?
+  \item You backport a fix from mainline into a vendor tree that is three years old and it does not
+    apply. What are your options, in order of increasing cost?
+  \item Why does the kernel build its own headers rather than using the ones in \file{/usr/include}?
+  \item You remove a config option contributing 34 KB and the \code{Image} shrinks by 64 KB. Where
+    did the other 30 KB come from, and would removing a second 34 KB option shrink it by another 64
+    KB?
+\end{enumerate}
+
+\needspace{6\baselineskip}
+\subsection*{Where to look}
+\begin{itemize}
+  \item \file{kernel/trim.config} is where this course's build lost most of its time and size, with
+    a comment on every line saying what it removed and why. It is worth reading before the lab.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Looking ahead}
+Chapter~\ref{c4:ch} is about:
+\begin{itemize}
+  \item The smallest thing you can write for a kernel, and how to load it into a running one.
+  \item \code{module_init}, and what ``init'' means for code with no \code{main}.
+  \item Why the kernel refuses to load some modules, and what a licence has to do with it.
+  \item The C you are allowed to write up here, which is less than you are used to.
+\end{itemize}
+This chapter was about the kernel somebody else wrote. Chapter~\ref{c4:ch} is the first where you
+add to it.

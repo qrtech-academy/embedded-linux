@@ -1,0 +1,325 @@
+% Solutions to the Chapter 3 exercises that are not code, from lectures/L03/appendix/c_exercises.md.
+% Exercises 3.6 and 3.7 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 3: The Kernel: Architecture, Source Tree, and Configuration}
+\label{sol:sec:c3}
+Answers to the exercises in \secref{c3:sec:exercises}. Exercises~\ref{c3:ex:6} and~\ref{c3:ex:7}
+are Code: the first is checked by \code{make test L=L03}, and the second is answered with a command
+and a number on your own target.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c3:ex:1}{What kind of program the kernel is}{Recall}
+
+\xpart{a} Any three of these (\secref{c3:app:a1}):
+\begin{itemize}
+  \item \textbf{It starts at \code{main} and is over when \code{main} returns.} The kernel has no
+    \code{main} and never returns; after boot it runs only when something enters it: a system call,
+    an interrupt, a fault.
+  \item \textbf{It has an address space that nothing else can write.} The kernel is one address
+    space shared by all of its parts, so a bug in any driver can corrupt any subsystem.
+  \item \textbf{A crash kills it and nothing else.} A process that faults is cleaned up by the
+    kernel; when the kernel faults, there is nothing above it to clean up.
+  \item \textbf{It is linked against a C library.} The kernel is built \code{-nostdinc} and
+    \code{-ffreestanding}, against its own headers.
+  \item \textbf{Its stack grows on demand.} The kernel's is fixed: 16 KB per task on arm64.
+\end{itemize}
+
+\xpart{b} It claims that the whole kernel, core, drivers, filesystems and network stack alike, runs
+in one privileged address space with no protection between its parts: any of them can read and
+write the others' memory, and a fault in one is a fault in the kernel. It does not claim that the
+kernel is one indivisible piece, since modules are loaded and unloaded at run time, into that same
+address space. And it says nothing about how the source is organised, which is intensely modular,
+with a directory, maintainers and internal interfaces for each subsystem. Monolithic is a claim
+about the address space, not about modularity (\secref{c3:app:a1}); the alternative it is contrasted
+with is a microkernel, where drivers and filesystems run as separate processes that the hardware
+keeps apart.
+
+\xpart{c} An oops. The fault handler finds no fixup for the address, prints \code{Unable to handle
+kernel NULL pointer dereference at virtual address 0000000000000000} with a register dump and a
+backtrace, taints the kernel, and kills the task that was running. If there is no task to blame,
+because the fault was in an interrupt handler, it panics instead, and it panics anyway if
+\code{panic_on_oops} is set. The difference is structural. A process's fault is handled by a
+separate program that is still intact, the kernel, which owns everything the process held and can
+take all of it back. When the kernel faults, the code that would clean up is the code that faulted,
+in the address space that may now be corrupt, and nobody is above it. Killing the task does not
+release the locks it held or finish the update it was halfway through, so even an oops the machine
+survives leaves it in an unknown state. Better testing means fewer faults; it cannot give the kernel
+a supervisor.
+
+\xpart{d} \code{printf} belongs to the C library, and the C library is built on top of the kernel:
+\code{printf} formats into a buffer and hands it to \code{write()}, which is a system call, a request
+to the kernel. The kernel cannot make that request of itself, and it is built without any C library
+at all. What it has instead is \code{printk}, which formats into the kernel's own log buffer, the
+one \code{dmesg} reads, and out to the console, carries a log level, and can be called from any
+context, an interrupt handler included (\secref{c4:app:a7}).
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c3:ex:2}{The two interfaces}{Recall}
+
+\xpart{a} The system call interface is stable forever: a change that makes a working userspace
+program stop working is reverted, however correct it was. The internal API has no guarantee at all:
+function signatures, structures and whole subsystems may change in any release
+(\secref{c3:app:a2}).
+
+\xpart{b} \textbf{From the stable system call interface:} the userspace half of your product, the
+programs that talk to your driver through \code{open}, \code{read} and \code{ioctl} and the rest of
+the userland around them, keeps working across kernel upgrades and never needs rebuilding for one.
+The same rule applies to what your driver adds: an \code{ioctl} or a sysfs file you ship is expected
+to stay as it is for good. \textbf{From the unstable internal API:} every new kernel may break your
+driver's build, or worse, keep it building and change what a function it calls means. You rebuild
+and retest against every kernel you support, port the driver whenever an interface it uses moves,
+and hear about the change from the compiler, because nobody making it knows your driver exists.
+
+\xpart{c} A stable internal ABI would freeze the kernel's internal design, mistakes included, for
+good. The kernel improves, and fixes its security bugs, by changing an internal interface and every
+caller of it in the same patch; with binary drivers depending on the old one, nothing they touch
+could change again. And a binary interface is not even one thing to freeze: the layout of the same
+structure differs with the compiler version, the configuration (SMP, the preemption model, debugging
+options) and the architecture. The file is \file{Documentation/process/stable-api-nonsense.rst},
+which makes both arguments and ends with the answer the project prefers: put the driver in the tree.
+
+\xpart{d} Whoever changes the API. The tree must build at every commit, so a patch that changes an
+internal interface converts every caller in the tree in the same series, usually mechanically and
+often with Coccinelle, or the maintainer will not take it. Your driver is one of those callers, and
+you are typically asked to review the change rather than to make it. That is the maintenance cost
+an out-of-tree driver pays and an in-tree one does not.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c3:ex:3}{Reading Kconfig}{Hand calculation}
+
+Both entries sit inside the \code{if GPIOLIB} block of \file{drivers/gpio/Kconfig}, so all of this
+assumes \code{CONFIG_GPIOLIB=y}, as \file{kernel/qa.config} sets it.
+
+\xpart{a} No \code{GPIO_SYSFS} line at all, and \code{CONFIG_GPIO_CDEV=y}. With \code{EXPERT} off,
+\code{GPIO_SYSFS}'s prompt is invisible, and a value from a fragment is only ever applied to a
+symbol that has a visible prompt, so the \code{y} is ignored. The symbol has no default either, so
+its value is \code{n}, and a symbol that is neither visible nor given a default is not written to
+the \code{.config}: not even as \code{\# CONFIG_GPIO_SYSFS is not set}. \code{GPIO_CDEV} keeps its
+\code{default y}. The course's \file{ci/kernel.sh} notices the line that vanished and prints
+\code{warning: CONFIG_GPIO_SYSFS=y did not survive olddefconfig} (\secref{c3:app:b2}).
+
+\xpart{b} \code{CONFIG_EXPERT=y}, \code{CONFIG_GPIO_SYSFS=y} and \code{CONFIG_GPIO_CDEV=y}. The
+prompt is now visible, its \code{depends on SYSFS} is met, so the fragment's \code{y} is taken; and
+the \code{select} forces \code{GPIO_CDEV} to \code{y}, which it already was by default, but now it
+can no longer be turned off while \code{GPIO_SYSFS} is on. \code{EXPERT} uncovers many other
+prompts too, and \code{olddefconfig} answers each of them with its default.
+
+\xpart{c} Yes, \code{CONFIG_GPIO_CDEV=y}. A symbol whose prompt is invisible is never asked about,
+but it is still evaluated: its value comes from its default, here \code{y}, and because it has one
+it is written out. Visibility decides whether you are asked; the value of a symbol nobody was asked
+about comes from its \code{default}, or from a \code{select} by a symbol that is on. That is why
+this course's \code{.config} has \code{CONFIG_GPIO_CDEV=y} with \code{EXPERT} off.
+
+\xpart{d} \code{depends on B} is a precondition: until \code{B} holds, the symbol is hidden and
+held at \code{n}. \code{select B} is an order: while the selecting symbol is on, \code{B} is forced
+on, without looking at \code{B}'s own dependencies. \textbf{\code{select}} is the one that can break
+a \code{depends on}: if \code{A} selects \code{B} and \code{B} depends on \code{C}, then turning on
+\code{A} with \code{C} off forces \code{B} on anyway, and the \code{.config} holds a \code{B} whose
+\code{depends on C} is false. Kconfig prints \code{WARNING: unmet direct dependencies detected for
+B}, and the build may fail inside \code{B}'s code, which was written on the assumption that \code{C}
+is there. That is also how an option nobody selected, with an unsatisfied \code{depends on}, ends
+up in a \code{.config}.
+
+\xpart{e} \code{CONFIG_GPIO_CDEV}, and it works, although the line is not what makes it work: with
+\code{EXPERT} off the symbol has no prompt, so the fragment's value is ignored exactly as in
+\textbf{a)}, and it is \code{y} anyway because that is its default. The line survives
+\code{olddefconfig} only because it agrees with the default; the check in \file{ci/kernel.sh}
+passes, and that is what this course's \file{kernel/qa.config} does. The difference shows the
+other way round: \code{\# CONFIG_GPIO_CDEV is not set} would not take effect either, so with
+\code{EXPERT} off you cannot turn it off at all. (For a \file{/dev/gpiochipN} to appear there must
+also be a GPIO controller to represent; this target has one, the PL061.)
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c3:ex:4}{Built in or module}{Hand calculation}
+
+\xpart{a} Must be \code{=y}: with no initramfs the kernel mounts the root filesystem itself, and a
+module lives on the root filesystem it would be needed to reach.
+
+\xpart{b} May be \code{=m}: the initramfs is a root filesystem in RAM that the bootloader loads
+with the kernel, and its init loads the driver from there before mounting the real root.
+
+\xpart{c} Cannot be \code{=m}: a \code{bool} has only the values \code{y} and \code{n}, so it is
+\code{=y} if anything on the system uses GPIO and \code{=n} otherwise.
+
+\xpart{d} May be \code{=m}: it is needed only while the device is plugged in, it is loaded then
+through its module alias, and until then it costs nothing.
+
+\xpart{e} Must be \code{=y}, for the same reason as \textbf{a)}: the kernel has to read the root
+filesystem before it can load any module, so the code that reads it cannot be one.
+
+\xpart{f} Cannot be \code{=m}: \code{PREEMPT_RT} is a \code{bool} in the preemption-model choice
+and changes how the whole kernel is compiled, turning spinlocks into sleeping locks and interrupt
+handlers into threads, which is not something that can be loaded later. It is \code{=y} only in
+\file{build/kernel-rt}, and only because \file{kernel/rt.config} turns \code{EXPERT} on as well.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c3:ex:5}{Navigating the tree}{Design}
+
+\xpart{a} \file{kernel/sched/}. \file{core.c} holds \code{__schedule()} and
+\code{pick_next_task()}, which asks each scheduling class in turn; \file{fair.c} is the class almost
+every task is in. If the name is not known: \code{grep -rn "pick_next_task" kernel/sched/}.
+
+\xpart{b} \file{drivers/hwmon/}: a temperature sensor is a hardware monitor, and most I2C ones are
+there (\file{lm75.c}, \file{tmp102.c}). One used for measurement rather than monitoring may be an
+IIO driver in \file{drivers/iio/temperature/}. Search by the chip's name, which is what the
+datasheet gives you: \code{grep -rli "tmp102" drivers/}.
+
+\xpart{c} \file{include/linux/}: it is in \file{fs.h}, at line 2062 of the pinned tree. To find the
+definition among thousands of uses, anchor the search on the opening line: \code{grep -rn "^struct
+file_operations \{" include/}.
+
+\xpart{d} \file{arch/arm64/kernel/}: \file{entry.S} holds the exception vector table
+(\code{vectors}) and the \code{kernel_ventry} macro, and \file{entry-common.c} the C handlers it
+calls, such as \code{el0t_64_sync_handler} for a system call or a fault from userspace. Search:
+\code{grep -rn "SYM_CODE_START(vectors)" arch/arm64/}.
+
+\xpart{e} \file{fs/}: \file{open.c} defines it as \code{SYSCALL_DEFINE4(openat, ...)}, at line 1441,
+and it calls \code{do_sys_open()}. Search for the macro, because the name \code{sys_openat} is
+generated by it and appears in no definition: \code{grep -rn "SYSCALL_DEFINE.(openat," fs/}.
+
+\xpart{f} \file{kernel/}, because it is about process 1 exiting, which is process management.
+\code{grep -rn "Attempted to kill init" kernel/} finds \file{kernel/exit.c}, line 908, in a call to
+\code{panic()}. The format string goes on \code{exitcode=0x\%08x}, so search for the fixed words and
+never for the number the message printed.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c3:ex:8}{A configuration for a real product}{Design}
+
+\xpart{a} Seven components, seven decisions:
+\begin{itemize}
+  \item \textbf{The SoC: \code{=y}.} Its platform symbol, interrupt controller, clocks, pin control
+    and timer are needed before anything else can run, and most of them are \code{bool} anyway.
+    Every other SoC family that \code{defconfig} enables is \code{=n}.
+  \item \textbf{The 256 MB of RAM: nothing to choose.} Memory management is core kernel, always
+    built in. What the size decides is how much you can afford to leave switched on, not whether
+    anything is a module.
+  \item \textbf{Ethernet: \code{=y}.} It is used on every boot, and the field updates of the sensor
+    driver presumably arrive over it; as a module it would only add a step that can fail. \code{=m}
+    is defensible if image size is tight, since nothing needs the network before userspace; that
+    argument has to show the space matters.
+  \item \textbf{The eMMC: \code{=y}}, meaning the MMC core, the SoC's host controller driver and the
+    MMC block driver: the root filesystem is on it and there is no initramfs to load a module from
+    (Exercise~\ref{c3:ex:4}\textbf{a)}).
+  \item \textbf{ext4: \code{=y}}, for the same reason (Exercise~\ref{c3:ex:4}\textbf{e)}).
+  \item \textbf{The I2C sensor: \code{=m}.} Replacing a driver without a reboot is only possible
+    for a module: install the new \code{.ko}, \code{rmmod} the old one, load the new. The I2C core
+    and the SoC's I2C controller driver are \code{=y}: they are not the part that is updated, and
+    the sensor module needs them.
+  \item \textbf{The watchdog: \code{=y}.} If U-Boot has already started it, the kernel has to keep
+    it fed from early boot until the userspace daemon takes over, which a module loaded later
+    cannot do; and the driver is small.
+\end{itemize}
+
+\xpart{b} The ones on the path to the root filesystem: the eMMC driver, including anything its
+host controller needs from the SoC such as clocks and pin control, and ext4. Either one as
+\code{=m} gives the same symptom: the kernel boots, runs its initialisation, and cannot mount the
+root filesystem. With no eMMC driver there is no block device, so it prints \code{VFS: Cannot open
+root device}, lists the partitions it can see, which are none, and stops with \code{Kernel panic -
+not syncing: VFS: Unable to mount root fs on unknown-block(0,0)}. With the device present but no
+ext4, it prints \code{No filesystem could mount root, tried:} and the types it does have, and
+panics with the same message naming the device it found. One more decision stops the boot if
+U-Boot has started the watchdog: with the driver \code{=n}, or \code{=m} and loaded too late,
+nothing feeds it, and the board resets partway through every boot.
+
+\xpart{c} Keep one kernel for both variants. Build both sensor drivers as modules, which they are
+already, and let each variant's device tree say which sensor is fitted, so the right driver is
+loaded by its \code{compatible} string; the variants then differ in their device tree, not in their
+kernel. \code{savedefconfig} is how the product's configuration is stored: after any change, it
+writes a \code{defconfig} holding only the choices that differ from the defaults, which is small
+enough to review in a commit, readable in a diff, and brought up to date by \code{olddefconfig} when
+the kernel moves on. If a variant ever does need a different kernel option, keep it as a fragment
+merged over that base, the way \file{kernel/rt.config} sits over this course's configuration, rather
+than as a second full \code{.config}.
+
+\xpart{d} The configuration: how many modules it builds (\file{modules.order} has one line per
+module) and which hardware it builds them for. Expect to find a vendor or architecture
+\code{defconfig} building for every board anyone upstreamed: dozens of SoC families with their
+clock, pin control, DMA and PHY drivers, graphics, sound and wireless, thousands of modules that can
+never load on the product. Turning those off is what took this course's build from about an hour
+and roughly two thousand modules to eighteen minutes and 458 (\secref{c3:app:b7}). The same file
+turns off DWARF debugging information, which by its own comment roughly doubles the build time.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c3:ex:9}{What one config option costs}{Cross-check}
+
+\xpart{a} $76 + 34{,}048 + 10 + 4 = 34{,}138$ bytes, from \code{.text}, \code{.rodata},
+\code{.rodata.str1.8} and \code{.initcall6.init} (\secref{c3:app:b6}). The listing's \code{Total},
+34,532, also counts the metadata and the 148 bytes of \code{__init} and \code{__exit} code.
+
+\xpart{b} They should not be identical, and each difference is accounted for exactly.
+\textbf{\code{configs.o}'s 34,048} is more than the compressed file: \file{kernel/configs.c} wraps
+the blob in two 8-byte markers, \code{IKCFG_ST} and \code{IKCFG_ED}, which
+\file{scripts/extract-ikconfig} searches for, and the same section holds the 96-byte
+\code{proc_ops} table behind \file{/proc/config.gz}; $33{,}936 + 16 + 96 = 34{,}048$. \textbf{The
+host's 33,944} includes the file name: \code{gzip} records \code{.config} and its terminating zero
+byte, 8 bytes, in the header, while the kernel's build compresses with \code{gzip -n}, which leaves
+the name out; $33{,}936 + 8 = 33{,}944$. \textbf{The target's 33,936} is the blob and nothing else,
+because \code{ikconfig_init} sets the file's size to the distance between the two symbols that
+bracket it; it is the size of \file{build/kernel/kernel/config_data.gz}.
+
+\xpart{c} The course's baseline, published in \secref{c3:app:a8}: \code{Image} 24,943,104 bytes,
+\code{vmlinux} 31,468,440 bytes, and among the sections \code{.text} at 13,021,184 and
+\code{.rodata} at 4,369,606.
+
+\xpart{e} The course measured two of the three and published them, drawn in
+Figure~\ref{fig:sol:c3:ikconfig}: \code{vmlinux}'s section total fell by 41,208 bytes, and the
+\code{Image} by 65,536. It did not publish the change in the \code{vmlinux} file; \textbf{f)} says
+what decides it.
+
+\lecturefigure[0.75]{exam/images/ikconfig_sizes.png}
+  {The one-line change of Exercise~\ref{c3:ex:9}, measured three ways on the course's target: 34,138
+   bytes of content in \code{configs.o}, 41,208 bytes of \code{vmlinux} sections, 65,536 bytes of
+   \code{Image}. The first gap is page alignment and the second 64 KiB segment alignment.}
+  {fig:sol:c3:ikconfig}
+
+\xpart{f} Each of the four:
+\begin{itemize}
+  \item \textbf{Closest and furthest.} The section total is closest, at $41{,}208 / 34{,}138 =
+    1.21$ times the prediction. The \code{Image} is $65{,}536 / 34{,}138 = 1.92$ times it, and the
+    \code{vmlinux} file is further still. \code{readelf -l} on \file{build/kernel/vmlinux} shows why:
+    the file's loadable part is the \code{Image} byte for byte, starting 64 KiB into the file, and
+    the symbol and string tables follow it. So the file shrinks by the \code{Image}'s 65,536 plus 24
+    bytes of \code{.symtab} for each symbol \code{configs.o} defined and the bytes of their names in
+    \code{.strtab}: a little more than the \code{Image}, and the furthest of the three, by a factor
+    of just over 1.9.
+  \item \textbf{The per-section deltas.} \code{.rodata} fell by 36,864 bytes for the 34,058 that
+    \code{configs.o} put there ($34{,}048 + 10$), and \code{.text} by 4,096 for its 76. Each delta
+    is a whole number of 4,096-byte pages, the content rounded up to the page: $34{,}058 / 4{,}096
+    = 8.3$, so nine pages, 36,864; 76 bytes, one page. Both sections hold page-aligned material
+    behind \code{configs.o}'s bytes (in \code{.text}, the hypervisor code, which starts and ends on
+    a page), so removing anything moves it down in whole pages. Which way the rounding goes depends
+    on how much padding was already in front of the boundary: 76 bytes moved \code{.text} by a page
+    only because the code before the boundary spilled less than 76 bytes into its last page; on
+    another build the same 76 bytes could move it by nothing. The other three deltas are small:
+    \code{.init.text} fell by 112 for \code{configs.o}'s 108, rounded to 8-byte alignment;
+    \code{.exit.text} by exactly its 40; and \code{.rela.dyn} by 96, four 24-byte relocation records
+    the linker kept for addresses stored in \code{configs.o}'s data, which the kernel patches when
+    it relocates itself at boot. $36{,}864 + 4{,}096 + 112 + 96 + 40 = 41{,}208$.
+  \item \textbf{The \code{Image} delta} is $65{,}536 = 64$~KiB exactly, one unit of
+    \code{SEGMENT_ALIGN}, which is \code{SZ_64K} in \file{arch/arm64/include/asm/memory.h}. The
+    linker script aligns the end of the text, the start of the init segment, the boundary between
+    init text and init data, and the end of the init segment to it. So the \code{Image} is a row of
+    segments, each starting on a 64 KiB boundary with padding in front of it, which lets each be
+    mapped with its own permissions using the largest mappings the hardware offers. The
+    \code{Image} can therefore only change size in 64 KiB steps, and a step happens when some
+    segment's contents cross a boundary.
+  \item \textbf{A second 34 KB option} would not necessarily shrink the \code{Image} by 64 KiB again.
+    About 41 KB of sections is less than one step, so it moves the \code{Image} by 65,536 only if it
+    takes a segment's contents back across a boundary, which depends on how much slack the first
+    removal left in front of each one: it could be 65,536 again, or nothing. Over many options the
+    \code{Image} shrinks by roughly the sum of what they contain; any single measurement is
+    quantised.
+\end{itemize}
+
+\xpart{g} A report that handles both worlds passes again, with seventeen checks: \file{run.sh} says
+the configuration is available as \code{inferred}, and the report reads \code{config-source:
+inferred} and \code{hz: unknown}.
+
+\xpart{h} ``About 34 KB: the compressed copy of the configuration and the code that serves it as
+\file{/proc/config.gz}, which the kernel keeps in memory for as long as it runs.'' That is the
+content, 34,138 bytes, and it is the one to quote because it is the option's own cost and the same
+on any build. The other two measure padding as well, which belongs to wherever the boundaries
+happened to fall on this build: the same option could cost 64 KiB of \code{Image} here and nothing
+on the next build. If the colleague is fitting this particular \code{Image} into a flash partition,
+64 KiB is what they pay on this build; then say that it is a number about this build, not about the
+option.

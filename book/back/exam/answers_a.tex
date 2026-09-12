@@ -1,0 +1,436 @@
+% Appendix: exam/paper_a_solutions.md.
+
+% The answers' headings are labelled ansa:q:N.
+\renewcommand{\answerprefix}{ansa}
+
+\chapter{Model Answers to Paper A}
+\label{ansa:ch:answers}
+
+Model answers for Appendix~\ref{exa:ch:paper}, with marks shown per part.
+
+\textbf{Code questions are answered as checklists} of what a correct answer must contain, not as
+listings. Two correct answers will not look alike, syntax is not marked, and a worked listing here
+would be a solution to the lab that asks for the same thing.
+
+Every measured number quoted here was taken on the course's own target, and each comes from the
+chapter that publishes it: the FIFO sequence in Question~5 is the Cross-check of
+Exercise~\ref{c5:ex:9}, the run in Question~7 is one of the ten in \secref{c7:app:a2}, the interrupt
+numbers in Question~8 are those of \secref{c8:app:a1}, and the latencies in Question~10 are those of
+\secref{c12:app:a8}.
+
+% ==========================================================================================
+\answersection{1}{The image, and the licence on it}{12}
+
+\answerpart{a}{3}
+Bootloader, kernel, root filesystem, toolchain.
+
+The \textbf{toolchain} is the one that does not ship. What it determines about the other three is
+the \textbf{ABI}: the C library and its version are baked into every binary built with it, so a
+glibc binary cannot run on a musl root filesystem, and a binary built against a newer glibc will not
+run on an older one. One mark for the four names, one for identifying the toolchain, one for naming
+the ABI consequence rather than saying ``it compiles them''.
+
+\answerpart{b}{4}
+Two thirds of a mark each, rounded in the candidate's favour:
+
+\begin{booktable}{@{}>{\hsize=0.43\hsize}L>{\hsize=1.57\hsize}L@{}}
+  \thead{Component} & \thead{Must publish} \\
+  \midrule
+  Bootloader & Complete corresponding source, including the board port, its config and build instructions \\
+  Kernel & The same, including the in-tree driver, the \code{.config} and the device tree sources \\
+  BusyBox & Source at the version shipped \\
+  MQTT library (Apache-2.0) & Nothing. Carry the licence text and the NOTICE file \\
+  Control daemon & Nothing \\
+  Out-of-tree driver & Nothing, if kept proprietary \\
+\end{booktable}
+
+\noindent The in-tree driver being \emph{inside} the kernel tree is the point of that row: it is
+part of the work whose source must be published, and a candidate who lists it separately as ``ours,
+so nothing'' has missed it.
+
+\answerpart{c}{2}
+No, it changes nothing. \textbf{The obligation runs to whoever receives the binary and is not
+conditional on modification.} One mark for ``no'', one for stating the rule. ``We did not change
+it'' is the plausible wrong answer and scores zero; it does make compliance trivial, since the
+answer is the upstream tarball at the version shipped, and a candidate who says that earns the
+second mark.
+
+\answerpart{d}{3}
+The daemon is settled by the \textbf{syscall exception}, which the kernel's \code{COPYING} declares
+at its head and \file{LICENSES/exceptions/Linux-syscall-note} states: user programs using kernel
+services by normal system calls are not derived works. That is a clarification granted by the
+copyright holder, not something that falls out of the GPL, and a candidate who says so earns full
+credit for that half.
+
+The driver is not settled because it is compiled against kernel headers and linked into the kernel's
+address space, so the derivative-work argument that the syscall exception excludes for applications
+applies to it directly. It is contested rather than decided; the kernel enforces a version of the
+argument mechanically through \code{EXPORT_SYMBOL_GPL} without the question ever being litigated.
+
+One mark for naming the syscall note, by \code{COPYING} or by \code{Linux-syscall-note}, one for the
+address-space distinction, one for identifying the second as contested rather than asserting an
+answer.
+
+% ==========================================================================================
+\answersection{2}{Asking a running kernel a question}{8}
+
+\answerpart{a}{2}
+They did not exist. There is no file and no storage: opening the path selects a kernel function, and
+reading it runs that function, which formats a string from live kernel variables at that instant.
+Closing the file discards it. One mark for ``nowhere'', one for the mechanism.
+
+\answerpart{b}{3}
+Any two of, one and a half marks each:
+\begin{itemize}
+  \item \textbf{Every file appears to have size zero}, because the kernel does not know the length
+    until it generates the answer. A program that trusts \code{stat} to size a buffer reads nothing.
+  \item \textbf{Two reads give two different answers}, with no consistency guarantee between them. A
+    program computing a rate from one read of a counter has computed nothing.
+  \item \textbf{Most of it cannot be mapped or sought from the end.} A program that \code{mmap}s
+    it, or seeks to the end to find its length, fails.
+  \item \textbf{A read can be expensive}, walking kernel structures under a lock. Polling in a tight
+    loop is measurably costly.
+\end{itemize}
+
+\answerpart{c}{2}
+\file{/proc} grew organically and holds whatever anyone put there, so its files share no format.
+\file{/sys} is generated from the driver model, with the rule of one value per file.
+\textbf{\file{/sys} is the documented ABI}, recorded in \file{Documentation/ABI/}. One mark each.
+
+\answerpart{d}{1}
+Major and minor. Major selects the \textbf{driver}; minor selects \textbf{which device of that
+driver's}. Both halves needed for the mark.
+
+% ==========================================================================================
+\answersection{3}{Configuring a kernel, and what it costs}{10}
+
+\answerpart{a}{3}
+\code{CONFIG_GPIO_SYSFS} is \textbf{absent entirely} from the final \code{.config}. Not \code{n},
+and not \code{\# CONFIG_GPIO_SYSFS is not set}: the line the candidate added is discarded.
+
+The prompt is \code{bool "..." if EXPERT}, so with \code{EXPERT} off the symbol \textbf{has no
+prompt}, and a symbol with no prompt cannot be set by a user or by a fragment. \code{olddefconfig}
+gives it its default, which is absent.
+
+One mark for ``not there at all'', two for the prompt-behind-\code{EXPERT} reasoning. A candidate
+who says ``it is set to n'' has the common misconception and earns one mark at most.
+
+\answerpart{b}{3}
+\code{depends on B} means the symbol is not offered unless B is on: a \textbf{precondition, which is
+checked}. \code{select B} means turning this symbol on \textbf{forces B on: an imperative, which is
+not checked}.
+
+\textbf{\code{select} is the one that can produce a violating \code{.config}}, because it does not
+evaluate the selected symbol's own \code{depends on}. Selecting B when B depends on C and C is off
+leaves \code{B=y} with its own requirements unmet, and the failure surfaces as a compile or link
+error in unrelated code. One mark per definition, one for identifying \code{select} with the
+mechanism.
+
+\answerpart{c}{2}
+Yes, it is set, provided its \code{depends on} is met. A hidden prompt means the symbol is
+\textbf{not asked about}, not that it is off; it then takes its \code{default}, here \code{y}. One
+mark for ``yes'', one for the distinction between ``nobody was asked'' and ``the value is n''.
+
+\answerpart{d}{2}
+The kernel boots normally, prints its usual messages, and then \textbf{panics}, because the driver
+it needs to read the root filesystem is stored on the root filesystem:
+
+\begin{console}
+Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+\end{console}
+
+\noindent One mark for the circularity, one for the shape of the message. Wording need not be exact;
+``unable to mount root fs'' is enough.
+
+% ==========================================================================================
+\answersection{4}{A module, written out}{12}
+
+\answerpart{a}{7}
+Marked against this checklist. Order and layout are free.
+
+\begin{booktable}{@{}Lr@{}}
+  \thead{Element} & \thead{Marks} \\
+  \midrule
+  An init function returning \code{int}, and an exit function returning \code{void} & 1 \\
+  Both registered, with \code{module_init} and \code{module_exit} & 1 \\
+  A message on load and a message on unload, using a \code{pr_*} wrapper & 1 \\
+  \code{static char *who = "world";} with \code{module_param(who, charp, ...)} & 1 \\
+  A mode of \code{0444}, or any read-only mode. \code{0644} is the trap and costs this mark & 1 \\
+  \code{MODULE_LICENSE}, plus author and description & 1 \\
+  \code{\#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt} \textbf{before} the includes & 1 \\
+\end{booktable}
+
+\noindent Deduct nothing for a missing header, a missing \code{__init}/\code{__exit}, or
+\code{MODULE_PARM_DESC}. Deduct the mode mark for a writable mode, since the question states the
+requirement explicitly.
+
+\answerpart{b}{2}
+\textbf{Nothing of the candidate's is running.} The module is \emph{resident and idle}: code and
+data occupying kernel memory, waiting to be called by something else. One mark for ``nothing
+running'', one for ``resident''. A candidate who says ``the module keeps running'' has the central
+misconception of the lecture and earns zero here.
+
+\answerpart{c}{1}
+It places the function in a section that is \textbf{discarded once initialisation is complete},
+returning that memory to the system; the boot message \code{Freeing unused kernel memory} is this
+happening. Naming the section-and-free behaviour earns the mark; ``it marks it as init code'' does
+not.
+
+\answerpart{d}{2}
+Any two of: the kernel version; \code{SMP}, so a kernel built without SMP has different locking
+primitives; the preemption model; \code{mod_unload}; \code{modversions}; the architecture. Half a
+mark each.
+
+The mismatch is an error rather than a warning because \textbf{the kernel has no stable internal
+ABI}: a structure that gained a field between two releases would be read at the wrong offsets, and
+the result would be silent memory corruption rather than a refusal. One mark for turning corruption
+into an error message.
+
+% ==========================================================================================
+\answersection{5}{The character device contract}{12}
+
+\answerpart{a}{5}
+One mark per line. Capacity 256, starting empty.
+
+\begin{narrowtable}{@{}llr@{}}
+  \thead{Step} & \thead{Returns} & \thead{Level after} \\
+  \midrule
+  write 200 & 200 & 200 \\
+  write 100 & \textbf{56} & 256 \\
+  read 512 & 256 & 0 \\
+  read 512 & \code{-EAGAIN} & 0 \\
+  write 300 & 256 & 256 \\
+\end{narrowtable}
+
+\lecturefigure[0.84]{exam/images/fifo_sequence.png}
+  {A grouped bar chart of the five calls, showing what each asked for against what it returned. The
+   second write asks for 100 and returns 56, a short write rather than an error; the second read
+   returns no bar at all and is marked -EAGAIN, because an empty FIFO is not end of file.}
+  {fig:fifo_sequence}
+
+\answerpart{b}{2}
+It returns \textbf{56}, a short write. The FIFO is not full when the call arrives, so \code{-ENOSPC}
+does not apply; the contract is that a short count is normal, not an error, and the caller is
+expected to read the return value. One mark for 56, one for naming the contract.
+
+\code{-ENOSPC} and \code{100} are the two plausible wrong answers.
+
+\answerpart{c}{3}
+Three quarters of a mark each:
+
+\begin{booktable}{@{}LlL@{}}
+  \thead{Situation} & \thead{Return} & \thead{Userspace sees} \\
+  \midrule
+  Non-blocking, nothing buffered & \code{-EAGAIN} & \code{read} returns $-1$, \code{errno} is \code{EAGAIN} \\
+  Write with the buffer full & \code{-ENOSPC} & $-1$, \code{errno} is \code{ENOSPC} \\
+  \code{copy_to_user} fails & \code{-EFAULT} & $-1$, \code{errno} is \code{EFAULT} \\
+  A read of zero bytes & 0 & \code{read} returns 0, \code{errno} is unchanged \\
+\end{booktable}
+
+\noindent The last is not an error at all. The \code{read} that Chapter~\ref{c5:ch} specifies
+returns 0 for a \code{count} of 0 (\secref{c5:app:b2}): nothing was asked for, so nothing is wrong.
+\code{-EINVAL} is the plausible wrong answer and scores nothing for that line.
+
+\answerpart{d}{2}
+Any three of these four, two thirds of a mark each, capped at 2:
+\begin{itemize}
+  \item The page may not be present; userspace memory is demand-paged, and a direct dereference
+    faults where no handler expects it.
+  \item The address may not belong to the caller, and may point into kernel memory, so a driver that
+    copies from it hands kernel memory to a program that asked for it.
+  \item The mapping can change under you; another thread can \code{munmap} it between check and
+    copy.
+  \item Faulting it in may sleep, which is legal here and not in every context the code might be
+    reused in.
+\end{itemize}
+
+% ==========================================================================================
+\answersection{6}{An address, translated and mapped}{12}
+
+\answerpart{a}{2}
+\textbf{Two cells}: one address and one size. You know because the \textbf{parent} declares
+\code{\#address-cells = <1>} and \code{\#size-cells = <1>}; the node itself does not say. One mark
+for ``two'', one for ``the parent declares it''. The second mark is the examinable half.
+
+\answerpart{b}{3}
+\code{reg}'s first cell is the child address \code{0x0}. The parent's \code{ranges = <0x00 0x00
+0xC000000 0x2000000>} maps child \code{0x0} to parent \code{0x0_0c000000}. So:
+
+\[
+  0\text{x}0 + 0\text{x}c000000 = 0\text{x}c000000
+\]
+
+\noindent The window is \code{0x1000}, 4096 bytes. Two marks for the address with working shown, one
+for the size. A candidate who answers \code{0x0} has taken \code{reg} at face value and earns zero
+for this part; follow that error through into part~(c) rather than penalising it twice.
+
+\answerpart{c}{3}
+Either:
+\begin{itemize}
+  \item the address is mapped but is not the device, and the identity register reads
+    \textbf{plausible zeros} with no error at all; or
+  \item the address is not backed by anything, and the read raises a \textbf{synchronous external
+    abort}, killing \code{insmod} and leaving the module half-loaded.
+\end{itemize}
+One mark each. The third mark is for saying that \textbf{the zeros are worse to debug}: the abort is
+immediate, loud and points at the faulting instruction, whereas a driver reading zeros carries on
+and misbehaves somewhere else later.
+
+\answerpart{d}{2}
+Type \code{0} is an \textbf{SPI}; number \code{0x70} is \textbf{112}; flag \code{4} is
+\textbf{level-triggered, active high}. The GIC number is $112 + 32 = 144$. One mark for the three
+fields, one for 144.
+
+\answerpart{e}{2}
+\code{devm_platform_ioremap_resource(pdev, 0)}.
+
+One mark for the call, one for naming what it replaced: the address the driver used to compute by
+hand (the OF core translated \code{reg} through every \code{ranges} when it created the device, so
+the driver now only asks for resource 0), \code{request_mem_region}, \code{ioremap}, and the
+matching releases in the error path and in \code{remove}.
+
+% ==========================================================================================
+\answersection{7}{A race, traced}{10}
+
+\answerpart{a}{1}
+$4 \times 20{,}000 = 80{,}000$.
+
+\answerpart{b}{2}
+$80{,}000 - 63{,}562 = 16{,}438$ lost, which is $16{,}438 / 80{,}000 = 20.5\%$. One mark each.
+
+\answerpart{c}{3}
+\textbf{Three}: a load, an add, and a store.
+
+The interleaving: CPU A loads the counter and gets \emph{n}. CPU B loads the counter, also gets
+\emph{n}. Both add one and both store \emph{n+1}. Two increments happened and the counter advanced
+by one. One mark for ``three'', two for an interleaving that actually loses an update; a candidate
+who says ``they happen at the same time'' without the load-load-store-store detail earns one.
+
+\answerpart{d}{2}
+\textbf{No, the bug is absent at no size.} What differs is that the threads do not overlap for long
+enough to collide: at 200 iterations the work finishes inside the window it takes the other threads
+to get going, so the interleaving never occurs.
+
+One mark for ``not absent'', one for the overlap explanation. This is the question that
+distinguishes a candidate who has understood the lecture, and the plausible wrong answer, ``the race
+needs more iterations to become likely'', earns one mark for being nearly right about the mechanism
+and missing that it is about \emph{duration of overlap} rather than \emph{number of attempts}.
+
+\answerpart{e}{2}
+For the counter alone, \textbf{yes}: \code{atomic_inc} makes the load-add-store indivisible and
+fixes it completely.
+
+With a running maximum alongside, \textbf{no}. The invariant now spans two variables and must hold
+across a read-compare-write sequence, which per-variable atomicity does not provide.
+
+The rule: \textbf{atomics protect one variable; locks protect an invariant.} If the property you
+need mentions more than one variable, you need a lock. One mark for the pair of answers, one for the
+rule.
+
+% ==========================================================================================
+\answersection{8}{An interrupt, acknowledged}{10}
+
+\answerpart{a}{3}
+One mark each:
+\begin{itemize}
+  \item The \textbf{device tree cell}, \code{112}, written by whoever described the board.
+  \item The \textbf{GIC hardware number}, \code{144}, which is 112 plus the 32-entry SPI base.
+  \item The \textbf{Linux IRQ number}, \code{17}, allocated at run time when the mapping is created
+    and unrelated to either. It changes if the machine is booted with a different set of devices.
+\end{itemize}
+
+\answerpart{b}{4}
+Checklist:
+
+\begin{booktable}{@{}Lr@{}}
+  \thead{Element} & \thead{Marks} \\
+  \midrule
+  Reads its own status register first & 1 \\
+  Returns \code{IRQ_NONE} when nothing of its own is pending & 1 \\
+  Acknowledges by writing \textbf{back the value it read} & 1 \\
+  Drains the FIFO until the level reads zero, and returns \code{IRQ_HANDLED} & 1 \\
+\end{booktable}
+
+\noindent Deduct the acknowledgement mark for writing \code{0xFFFFFFFF} or an invented mask, since
+that clears bits set after the read and loses those events. The order of the acknowledgement and the
+drain is not marked here; part~(c) is where it is examined.
+
+\answerpart{c}{2}
+An event arriving between the acknowledge and the drain sets the status bit again \emph{and} adds to
+the FIFO the handler is about to empty. The handler services it and returns with the status bit
+still set, producing \textbf{one spurious interrupt with nothing to do}.
+
+\textbf{No data is lost.} One mark for the sequence, one for stating that this ordering is the safe
+one. A candidate who says data is lost has it backwards; that is the \emph{other} ordering.
+
+\answerpart{d}{1}
+The line stays asserted, so the handler is re-entered immediately and forever. \code{insmod} never
+returns and the machine is unrecoverable. Either ``interrupt storm'' or ``the machine wedges'' earns
+the mark.
+
+% ==========================================================================================
+\answersection{9}{A reader put to sleep}{8}
+
+\answerpart{a}{3}
+The reader evaluates \code{fifo_empty()} and finds it true. \textbf{The interrupt fires here}: the
+handler adds data and calls \code{wake_up}, which finds nothing asleep on the queue and does nothing
+at all. The reader then sets its state and calls \code{schedule()}, and sleeps waiting for a wakeup
+that has already happened: until the next one, and forever if there is none.
+
+Two marks for the interleaving, one for placing the interrupt precisely between the test and the
+state change. A candidate who says ``there is a race'' without locating it earns one.
+
+\answerpart{b}{2}
+One mark each:
+\begin{itemize}
+  \item \textbf{Because of the failure in part~(a):} the macro queues the task and sets its state
+    \emph{before} testing the condition, so a wake arriving during that window finds the task on the
+    queue. Testing a condition rather than a flag is what allows the test to happen after queueing.
+  \item \textbf{Because a wake does not mean the condition is true:} several readers may be woken
+    and the first to run may take all the data, and spurious wakes happen. The macro loops and
+    re-tests.
+\end{itemize}
+
+\answerpart{c}{2}
+Half a mark each: the bytes and their count; sleep until data arrives; \code{-EAGAIN};
+\code{-ERESTARTSYS}.
+
+\textbf{Zero is never correct} and a candidate who offers it for the second or third case loses that
+half mark and should have it pointed out.
+
+\answerpart{d}{1}
+The \textbf{delay} family (\code{udelay}, \code{mdelay}), which busy-waits and works in any context;
+and the \textbf{sleep} family (\code{msleep}, \code{usleep_range}), which gives up the CPU and needs
+process context.
+
+The question: \textbf{can this code sleep?} Both halves needed for the mark.
+
+% ==========================================================================================
+\answersection{10}{Frameworks, and the trade}{6}
+
+\answerpart{a}{2}
+Any three of, two thirds of a mark each: no way for a program that does not know about it to find
+it; no documented interface; no existing tools; no power management; no way to express what the
+device \emph{is}; an \code{ioctl} ABI the author now maintains indefinitely, including its 32-on-64
+compatibility.
+
+\answerpart{b}{2}
+It had to implement a \textbf{channel specification} saying the value is a voltage, indexed, with
+\code{IIO_CHAN_INFO_RAW}, and a \textbf{\code{read_raw} callback} returning the value.
+
+It did \textbf{not} have to implement a \file{/dev} node, a \code{read()}, an \code{open()}, an
+\code{ioctl}, or any sysfs plumbing. One mark each way round.
+
+\answerpart{c}{2}
+\textbf{Neither is better in the abstract, and the question cannot be answered without the
+requirement.} A throughput-oriented system should prefer \code{PREEMPT}, whose mean is 19\% lower. A
+system with a deadline should prefer \code{PREEMPT_RT}, whose worst case is 2.3 times lower, because
+a deadline is a statement about the maximum and an average is not evidence about it.
+
+Full marks for an answer that names the requirement as the deciding factor and reads both columns.
+One mark for an answer that picks \code{PREEMPT_RT} and defends it only by the maximum without
+noticing the mean got worse. \textbf{Zero for an answer that compares the means alone}, which is the
+trap.
+
+A candidate may reasonably argue that the difference is within run-to-run noise and that neither
+conclusion is safe from one measurement; that earns full marks and is the better answer.

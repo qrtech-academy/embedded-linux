@@ -1,0 +1,295 @@
+% Section 9.1, from lectures/L09/appendix/a_sleeping.md.
+
+\section{Sleeping and Waiting}
+\label{c9:app:a}
+
+The other half of Chapter~\ref{c8:ch}. That chapter was about the half the hardware drives: a line
+goes high and a handler runs. This one is about the half the software drives: a program has asked
+for data that does not exist yet, and something has to happen to it in the meantime.
+
+\Secref{c9:app:b} is time, delays and timers.
+
+The idea to carry: \textbf{sleeping is not waiting.} A sleeping task is off the run queue entirely
+and costs nothing; a spinning task is on it and costs a CPU. The whole of this section is machinery
+for getting into the first state safely.
+
+\subsection{What sleeping is}
+\label{c9:app:a1}
+
+A task has a state. The ones that matter:
+
+\begin{booktable}{@{}>{\hsize=0.80\hsize}Lll>{\hsize=1.20\hsize}L@{}}
+  \thead{State} & \thead{\code{ps} shows} & \thead{On the run queue} & \thead{Woken by} \\
+  \midrule
+  \code{TASK_RUNNING} & \code{R} & Yes & It is already running or ready \\
+  \code{TASK_INTERRUPTIBLE} & \code{S} & \textbf{No} & An explicit wake, or a signal \\
+  \code{TASK_UNINTERRUPTIBLE} & \code{D} & \textbf{No} & An explicit wake only \\
+\end{booktable}
+
+\noindent To sleep, a task sets its state to something other than \code{TASK_RUNNING} and calls
+\code{schedule()}. The scheduler then does not consider it again until something sets it back to
+\code{TASK_RUNNING}. That is all a wait queue is built out of.
+
+\textbf{Use \code{TASK_INTERRUPTIBLE} in a driver, essentially always.} The uninterruptible state
+exists for short, uninterruptible hardware operations, and a task stuck in \code{D} cannot be
+killed, not even with signal 9, which is \secref{c2:app:a5}'s observation arriving with a cause.
+
+\subsection{The wrong version, and why it is wrong every time}
+\label{c9:app:a2}
+
+The obvious implementation of ``wait until there is data'':
+
+\begin{ccode}
+/* WRONG */
+while (fifo_empty())
+        schedule();
+\end{ccode}
+
+\noindent Two things are wrong. It never sets its state, so it stays \code{TASK_RUNNING} and the
+scheduler keeps picking it: this is a busy-wait with extra steps, and it burns a CPU doing nothing.
+And it is on no wait queue, so even if it did sleep, no wake-up could ever find it.
+
+The obvious fix is worse, because it looks right. Take it that the reader has already joined the
+queue the handler wakes; the snippet leaves that line out, because what is wrong is elsewhere:
+
+\begin{ccode}
+/* WRONG, and subtly */
+if (fifo_empty()) {
+        set_current_state(TASK_INTERRUPTIBLE);
+        schedule();
+}
+\end{ccode}
+
+\noindent Consider the interleaving. The reader evaluates \code{fifo_empty()} and finds it true.
+\textbf{The interrupt fires here.} The handler adds data and calls \code{wake_up_interruptible},
+which finds nothing asleep on the queue and does nothing at all. The reader then sets its state and
+calls \code{schedule()}, and sleeps waiting for a wakeup that has already happened: until the next
+one, if there is a next one, and forever if there is not.
+
+\textbf{This is the lost wakeup, and it is not a rare race.} The window is two instructions wide,
+but with an interrupt arriving every millisecond it is hit within seconds. It is not the kind of bug
+that waits for production; it is the kind that fails in your first test and then works on the
+second, which is worse.
+
+\lecturefigure{lectures/L09/appendix/images/lost_wakeup.png}
+  {A sequence diagram with a lane for the reader and a lane for the handler. The reader tests
+   \code{fifo_empty} and finds it true; the handler then pushes a sample and calls \code{wake_up},
+   which finds nothing asleep to wake; the reader then sets its state and calls \code{schedule}, and
+   sleeps until the next wake, if one ever comes.}
+  {fig:lost_wakeup}
+
+\subsection{What the macro actually does}
+\label{c9:app:a3}
+
+\code{wait_event_interruptible} is the correct version, and reading its expansion is worth more than
+memorising its usage. From \file{include/linux/wait.h}, abridged:
+
+\begin{ccode}
+for (;;) {
+        long __int = prepare_to_wait_event(&wq_head, &__wq_entry, state);
+
+        if (condition)
+                break;
+
+        if (___wait_is_interruptible(state) && __int) {
+                __ret = __int;
+                goto __out;
+        }
+
+        schedule();
+}
+finish_wait(&wq_head, &__wq_entry);
+\end{ccode}
+
+\noindent Three things close the window in \secref{c9:app:a2}, in this order:
+\begin{enumerate}
+  \item \textbf{\code{prepare_to_wait_event} first.} It adds the task to the queue \emph{and} sets
+    its state, before the condition is looked at. From that moment a \code{wake_up} cannot be
+    missed: it will find this task on the queue and set it runnable.
+  \item \textbf{The condition is tested after being queued.} If the data arrived during step 1, the
+    test sees it and breaks out without ever sleeping.
+  \item \textbf{It is a loop.} After \code{schedule()} returns, the condition is tested again.
+\end{enumerate}
+Step 3 is why the macro takes a \emph{condition} and not a flag. \textbf{A wake does not mean the
+condition is true.} Several readers may be woken and the first to run may take all the data; a wake
+may be spurious. The sleeper must re-check, and the loop does it for you.
+
+Two consequences for how you write the condition: it is evaluated \textbf{many times}, so it must be
+cheap and free of side effects, and it is evaluated \textbf{from the waiting task's context}, so it
+must be safe to call there.
+
+\subsection{Using it}
+\label{c9:app:a4}
+
+\begin{ccode}
+static DECLARE_WAIT_QUEUE_HEAD(qa_readq);
+
+/* the reader */
+for (;;) {
+        n = take_the_data();        /* under the lock; 0 if there was none */
+        if (n)
+                break;
+        if (file->f_flags & O_NONBLOCK)
+                return -EAGAIN;
+        if (wait_event_interruptible(qa_readq, !fifo_empty()))
+                return -ERESTARTSYS;
+}
+
+/* the interrupt handler */
+if (got_data)
+        wake_up_interruptible(&qa_readq);
+\end{ccode}
+
+\noindent\textbf{The reader loops for the same reason the macro does.} A wake says there was data
+when the waker looked; with two readers, the other may have taken it by the time this one runs. A
+reader that takes nothing goes back to waiting, because returning 0 would tell its caller the
+device had finished.
+
+\begin{narrowtable}{@{}ll@{}}
+  \thead{Function} & \thead{Wakes} \\
+  \midrule
+  \code{wake_up_interruptible} & Tasks in \code{TASK_INTERRUPTIBLE} \\
+  \code{wake_up} & Those and \code{TASK_UNINTERRUPTIBLE} \\
+  \code{wake_up_interruptible_all} & The same, and every exclusive waiter, not one \\
+\end{narrowtable}
+
+\noindent An \emph{exclusive} waiter is one that asked, with
+\code{wait_event_interruptible_exclusive}, to be woken on its own. The first two wake every other
+waiter on the queue and at most one exclusive one.
+
+\textbf{Waking is safe from interrupt context} and does not sleep, which is what makes
+this the natural join between Chapter~\ref{c8:ch}'s handler and this chapter's reader.
+
+\textbf{A name to avoid.} Calling the queue \code{readq} does not compile: the kernel already has
+\code{readq}, the 64-bit MMIO accessor from \secref{c6:app:b4}, and the error is \code{'readq'
+redeclared as different kind of symbol}. The kernel namespace is flat and short names are taken;
+prefix yours with the driver's name.
+
+\subsection{Blocking \code{read()}, properly}
+\label{c9:app:a5}
+
+Four cases, and a driver has to get all four right:
+
+\begin{narrowtable}{@{}ll@{}}
+  \thead{Situation} & \thead{Return} \\
+  \midrule
+  Data available & The bytes, and how many \\
+  Empty, blocking & Sleep until there is data \\
+  Empty, \code{O_NONBLOCK} & \textbf{\code{-EAGAIN}} \\
+  Signal arrives while asleep & \textbf{\code{-ERESTARTSYS}} \\
+\end{narrowtable}
+
+\noindent \textbf{Never 0.} Zero means end of file, which is Chapter~\ref{c5:ch}'s subject and the
+reason that chapter returned \code{-EAGAIN} unconditionally. This chapter upgrades that:
+\code{-EAGAIN} is now the answer only for a caller who asked for it with \code{O_NONBLOCK}.
+
+\subsubsection{\code{-ERESTARTSYS}}
+\label{c9:app:a:-erestartsys}
+
+\code{wait_event_interruptible} returns non-zero when a signal arrived. The driver returns
+\code{-ERESTARTSYS}, which never reaches userspace: the kernel sees it and either restarts the
+system call transparently or converts it to \code{-EINTR}, depending on how the signal handler was
+installed.
+
+\textbf{Getting this wrong makes your device un-interruptible with Ctrl-C}, and users notice. A
+driver that returns \code{-EINTR} directly is close but takes the restart decision away from the
+kernel; one that ignores the return value and carries on has a reader that cannot be killed.
+
+\subsubsection{Toggling \code{O_NONBLOCK}}
+\label{c9:app:a:toggling-o_nonblock}
+
+Worth knowing because it catches people writing tests. A descriptor's blocking behaviour is a
+property of the open file, changeable at run time:
+
+\begin{ccode}
+int flags = fcntl(fd, F_GETFL, 0);
+fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+\end{ccode}
+
+\noindent The course's own tester needs this: draining a blocking descriptor attached to a device
+that produces a sample every millisecond never terminates, because there is always more data a
+millisecond from now.
+
+\subsection{\code{poll}, and what it buys}
+\label{c9:app:a6}
+
+Two lines of driver code, and every multiplexing interface in userspace works on your device.
+
+\begin{ccode}
+static __poll_t qa_poll(struct file *file, struct poll_table_struct *wait)
+{
+        poll_wait(file, &qa_readq, wait);
+        return fifo_empty() ? 0 : (EPOLLIN | EPOLLRDNORM);
+}
+\end{ccode}
+
+\noindent \textbf{\code{poll_wait} does not wait.} It registers the caller's interest in your wait
+queue and returns immediately; the sleeping is done by the \code{select}/\code{poll}/\code{epoll}
+machinery above you, on all the descriptors at once. Your function is then called a second time
+after any wake, to ask again.
+
+So the function must do exactly two things: register on every queue that could make it ready, and
+return a mask describing readiness \emph{now}.
+
+\begin{booktable}{@{}lL@{}}
+  \thead{Bit} & \thead{Means} \\
+  \midrule
+  \code{EPOLLIN} & Readable \\
+  \code{EPOLLRDNORM} & Readable, normal data. Conventionally set with \code{EPOLLIN} \\
+  \code{EPOLLOUT} & Writable \\
+  \code{EPOLLERR} & An error \\
+  \code{EPOLLHUP} & Hung up \\
+\end{booktable}
+
+\noindent What it buys is that \textbf{one thread can wait on your device and a socket and a timer
+together}, which is the whole architecture of most userspace daemons. Without \code{poll}, a program
+that wants to watch your device and anything else needs a thread per descriptor.
+
+Measured on the target: with the device running, \code{select} reports the descriptor readable
+within a second; with the device stopped, \code{select} given a 300 ms timeout returns 0 after
+\textbf{305 ms}.
+
+\subsection{Completions}
+\label{c9:app:a7}
+
+For the common special case of ``wait for this one thing to finish once''.
+
+\begin{ccode}
+static DECLARE_COMPLETION(setup_done);
+
+wait_for_completion(&setup_done);       /* the waiter */
+complete(&setup_done);                  /* whoever finished */
+\end{ccode}
+
+\noindent A completion is a wait queue plus a ``has it happened'' flag, so it has no lost-wakeup
+problem to solve: completing before anyone waits is fine, and the waiter returns immediately.
+
+Use a completion for a one-shot event (initialisation finished, a DMA transfer completed) and a wait
+queue for a recurring condition (data is available). Choosing a wait queue for a one-shot means
+writing the flag yourself, which is where the lost wakeup comes back.
+
+\code{wait_for_completion_interruptible} and \code{wait_for_completion_timeout} exist and are
+usually what you want in a driver, for the same reasons as their \code{wait_event} equivalents.
+
+\subsection{What may sleep, and where}
+\label{c9:app:a8}
+
+The rules from \secref{c7:app:a7} and \secref{c8:app:a7}, stated once more because this is the chapter
+where you deliberately sleep:
+
+\begin{narrowtable}{@{}ll@{}}
+  \thead{Context} & \thead{May sleep} \\
+  \midrule
+  A system call, so \code{read} & \textbf{Yes} \\
+  A threaded IRQ handler & \textbf{Yes} \\
+  A workqueue & \textbf{Yes} \\
+  A hard IRQ handler & No \\
+  Holding a spinlock & No \\
+  A timer callback & No \\
+\end{narrowtable}
+
+\noindent The one that catches people in this chapter: \textbf{you may not sleep while holding a
+spinlock}, and \code{wait_event_interruptible} sleeps. So the condition is checked under the lock,
+the lock is dropped, and the wait happens outside it. Doing it the other way round deadlocks the
+machine, and \code{CONFIG_DEBUG_ATOMIC_SLEEP} turns that into a \code{BUG: sleeping function called
+from invalid context} rather than a hang.

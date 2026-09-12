@@ -1,0 +1,300 @@
+% Solutions to the Chapter 4 exercises that are not code, from lectures/L04/appendix/b_exercises.md.
+% Exercises 4.6 and 4.7 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 4: Kernel Modules}
+\label{sol:sec:c4}
+Answers to the exercises in \secref{c4:sec:exercises}. Exercises~\ref{c4:ex:6} and~\ref{c4:ex:7}
+are Code, and are checked on the target as their Check yourself lines say.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c4:ex:1}{A module is not a program}{Recall}
+
+\xpart{a} Nothing of the module's is running: its init function has returned and it has no thread
+of its own. What is resident is its core memory: its code, including the exit function that
+\code{rmmod} will call, its read-only data and parameter table, and its writable data, including
+its \code{struct module}; with them, its directory under \file{/sys/module}. Its \code{__init} code
+has already been freed. It waits to be called by something else.
+
+\xpart{b} Because \code{insmod} is the process that called \code{init_module()}, and the kernel
+runs your init function inside that call: \code{insmod} returns when init does. A \code{while (1)}
+never returns, so neither does \code{insmod}. It sits in the system call, where a signal cannot
+reach it, because a signal is acted on only on the way back to userspace; and the module stays in
+the \code{Loading} state in \file{/proc/modules}, where \code{rmmod} refuses it. A CPU spins for
+good, and the cure is a reboot. What you should have written is registration: a kernel thread
+started with \code{kthread_run()} that loops until \code{kthread_should_stop()}, or a timer or a
+work item if the work is periodic, started in init and stopped in exit.
+
+\xpart{c} They are section attributes, and the linker and the loader act on them. \code{__init}
+places a function in \code{.init.text}, and \code{__initdata} a variable in \code{.init.data}: for
+code built into the kernel those sections are freed at the end of boot, and in a module the loader
+puts them in separate init memory and frees it as soon as the init function has returned.
+\code{__exit} places a function in \code{.exit.text}: a module keeps it, because \code{rmmod} will
+call it, and a built-in one can never run it, so it is thrown away, at link time on most
+architectures and with the init code on arm64 (\secref{c4:app:a1}). The consequence is that calling
+an \code{__init} function after init, or keeping a pointer into \code{__initdata}, is a use after
+free, and \code{modpost} warns of a section mismatch when ordinary code refers to init code.
+
+\xpart{d} It is the kernel freeing what \code{__init} and \code{__initdata} set aside. Once the last
+initcall has run, just before it starts \file{/init}, the kernel releases its whole init segment,
+4,672 KB on this build, the stretch from \code{__init_begin} to \code{__init_end}
+(\secref{c3:app:a8}). On arm64 most of that stretch is not \code{__init} code: 3.3 MB of it is the
+relocation table the kernel applies to itself at boot, and the \code{__init} code and data are about
+1 MB. The loader does the same for each module, on a small scale, when its init function returns
+(Exercise~\ref{c4:ex:9}\textbf{f)}).
+
+\xpart{e} \code{MODULE_LICENSE}, \code{MODULE_AUTHOR}, \code{MODULE_DESCRIPTION} and
+\code{MODULE_VERSION}. \code{MODULE_LICENSE} is the one that is not optional: without it
+\code{modpost} stops the build with \code{ERROR: modpost: missing MODULE_LICENSE() in}, followed by
+the object's path, and no \code{.ko} is produced. A module that did load with no licence would be
+treated as \code{unspecified}, which is not GPL-compatible: it would taint the kernel and see no
+GPL-only symbol.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c4:ex:2}{Four commands}{Recall}
+
+\xpart{a} \code{insmod} loads exactly the file it is given, with any parameters on its command
+line, and resolves nothing. \code{modprobe} takes a module name, looks it up in the dependency file
+under \code{/lib/modules/$(uname -r)}, and loads what it depends on first and then the module.
+\code{depmod} scans the modules under \code{/lib/modules/$(uname -r)}, reads which symbols each one
+needs and which it exports, and writes that dependency file. \code{rmmod} asks the kernel to unload
+a module by name, which the kernel refuses while anything holds it.
+
+\xpart{b} \code{insmod} resolves nothing and \code{modprobe} resolves dependencies, from a file
+\code{depmod} wrote. The experiment: with \code{qa_export} not loaded, \code{insmod ./qa_user.ko}
+fails; the kernel logs \code{qa_user: Unknown symbol qa_answer (err -2)} and \code{insmod} prints
+\code{can't insert './qa_user.ko': unknown symbol in module or invalid parameter}
+(\secref{c4:app:a4}). Then copy both modules under \code{/lib/modules/$(uname -r)/}, run
+\code{depmod}, and run \code{modprobe qa_user}: \code{qa_export} is loaded first, then
+\code{qa_user}, and \code{lsmod} shows both, with \code{qa_user} using \code{qa_export}.
+
+\xpart{c} \file{modules.dep}, in \code{/lib/modules/$(uname -r)/}, which \code{depmod} generates;
+\code{make modules_install} runs \code{depmod} for you (\secref{c3:app:b4}). BusyBox's simplified
+\code{modprobe}, which is the one on this target, keeps its own version beside it,
+\file{modules.dep.bb}, and generates that itself when it is missing.
+
+\xpart{d} \file{/sys/module/qa_export/holders/}, which holds a link named \code{qa_user}.
+\file{/sys/module/qa_export/refcnt} gives only the count, 1.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c4:ex:3}{Reading \code{vermagic}}{Hand calculation}
+
+\xpart{a} \file{include/linux/vermagic.h} builds the string from six parts, each an assertion about
+the kernel:
+\begin{itemize}
+  \item \code{6.12.30}: the kernel release it was built against.
+  \item \code{SMP}: built with \code{CONFIG_SMP}, so its locking and per-CPU code assume more than
+    one CPU.
+  \item \code{preempt}: built for the preemptible-kernel model (\code{CONFIG_PREEMPT_BUILD}, which
+    \code{CONFIG_PREEMPT} selects); a real-time kernel says \code{preempt_rt}, and a
+    non-preemptible one says nothing.
+  \item \code{mod_unload}: built with \code{CONFIG_MODULE_UNLOAD}, so modules can be unloaded and
+    are reference-counted, which changes \code{struct module} and what the module's own code does.
+  \item \code{modversions}: built with \code{CONFIG_MODVERSIONS}, so the module carries a checksum
+    for every symbol it imports and the kernel checks them.
+  \item \code{aarch64}: the architecture.
+\end{itemize}
+
+\xpart{b} Each of the four:
+\begin{itemize}
+  \item \textbf{Same source, no configuration change: it loads.} The \code{vermagic} string and
+    every symbol checksum come out the same.
+  \item \textbf{\code{\# CONFIG_SMP is not set}: it loads, because nothing changed.}
+    \file{arch/arm64/Kconfig} declares \code{SMP} as \code{def_bool y}, with no prompt, so the line
+    cannot take effect: \code{olddefconfig} keeps \code{CONFIG_SMP=y}, and the kernel is still SMP.
+    Not even \file{ci/kernel.sh} says so, because it checks only the \code{CONFIG_X=} lines of a
+    fragment, not the lines that turn something off.
+  \item \textbf{6.12.30 to 6.12.31: it loads, unless one of the interfaces it uses changed.} With
+    \code{modversions} the module has a table of checksums, and in that case the loader does not
+    compare the release at all: \code{same_magic()} in \file{kernel/module/version.c} compares the
+    two strings from the first space onwards. The rest of the string matches, so the decision falls
+    to the checksums: of \code{module_layout}, which covers \code{struct module} and the structures
+    around it, and of every symbol the module imports. A stable update rarely changes one; if it
+    did, the loader prints \code{qa_hello: disagrees about version of symbol} and the symbol's name,
+    and refuses. On a kernel without \code{CONFIG_MODVERSIONS} the release would be compared, and the
+    module refused.
+  \item \textbf{\code{PREEMPT_RT} instead of \code{PREEMPT}: it is refused.} The real-time kernel's
+    string is \code{6.12.30 SMP preempt_rt mod_unload modversions aarch64}, and the comparison
+    fails at \code{preempt} against \code{preempt_rt} (\secref{c4:app:a3}). It must: under
+    \code{PREEMPT_RT} a \code{spinlock_t} is a sleeping lock with a different layout, and a module
+    compiled for the other kernel would use every lock it touches wrongly.
+\end{itemize}
+
+\xpart{c} A checksum for every exported symbol, computed from the symbol's full type: its
+prototype and, recursively, the layout of every structure it passes. The kernel records the
+checksums of what it exports, and each module records, in its \code{__versions} section, the
+checksum it was built against for each symbol it imports; the loader compares them one by one.
+\code{vermagic} alone names a release and a few options, and cannot see a structure that changed
+shape while the string stayed the same, through a configuration option that adds a field, a vendor
+patch, or a rebuild with a different configuration and the same version number. The checksums check
+the interface the module actually uses, which is also what lets the loader stop comparing the
+release, so a module survives an update that did not touch anything it uses.
+
+\xpart{d} Because the failure it prevents is silent memory corruption in the one address space
+everything shares. A module built for other structure layouts reads and writes fields at the wrong
+offsets, passes the wrong arguments and takes locks of the wrong size; nothing detects any of that
+when it happens, and the damage surfaces later, somewhere else, as a crash or wrong data in code
+that has nothing to do with the module (\secref{c3:app:a1}). A warning would scroll out of the log
+and leave the corruption behind. A refusal costs a rebuild; the alternative costs a crash nobody can
+trace, possibly in the field.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c4:ex:4}{The licence, at two stages}{Hand calculation}
+
+\xpart{a} The build fails at \code{modpost}, the step that runs after the objects are linked and
+before the \code{.ko} is finished. It sees \code{qa_export}'s GPL-only export and the proprietary
+module's use of it, and stops with this, naming whatever your module is called:
+\begin{console}
+ERROR: modpost: GPL-incompatible module qa_proprietary.ko uses GPL-only symbol 'qa_answer'
+\end{console}
+\noindent No \code{.ko} is produced.
+
+\xpart{b} The build still fails at \code{modpost}, but for an unresolved symbol:
+\begin{console}
+ERROR: modpost: "qa_answer" [.../qa_proprietary.ko] undefined!
+\end{console}
+\noindent The message is different because \code{modpost} can only apply the licence rule to an
+export it has seen. Here \code{qa_answer} is in neither the kernel's \file{Module.symvers} nor any
+module in the build, so as far as \code{modpost} knows the symbol does not exist, let alone that it
+is GPL-only. Handing it the exporter's \file{Module.symvers} through \code{KBUILD_EXTRA_SYMBOLS}
+brings back the message of \textbf{a)}.
+
+\xpart{c} Whenever \code{modpost} could not see that the symbol is GPL-only. Either the module was
+built as in \textbf{b)} with \code{KBUILD_MODPOST_WARN=1}, which turns the unresolved symbol into a
+warning and lets the \code{.ko} be written; or it was built against a kernel, or an exporter's
+\file{Module.symvers}, in which the symbol was plain \code{EXPORT_SYMBOL}, and is then loaded where
+it has since become \code{EXPORT_SYMBOL_GPL}. The second is the one that happens on kernel upgrades.
+
+\xpart{d} The kernel logs \code{qa_proprietary: Unknown symbol qa_answer (err -2)}, and BusyBox's
+\code{insmod} prints \code{unknown symbol in module or invalid parameter}. No licence is mentioned
+because the loader never refuses on grounds of licence. It checks the licence first, and marks the
+module as proprietary; the symbol lookup then runs with \code{gplok} false, and
+\code{find_exported_symbol_in_section()} skips every GPL-only table before searching it
+(\secref{c4:app:a5}). The lookup fails exactly as it would for a symbol that is not exported at all,
+with \code{-ENOENT}, and the loader reports, accurately, what it found: nothing.
+
+\xpart{e} It arrives last, at load time on the target, possibly in the field after an upgrade,
+rather than at build time on your own machine. It is word for word the message for a missing
+dependency or a typo, so it sends you after the wrong causes. And the symbol is plainly in
+\file{/proc/kallsyms}, so the message looks false. Diagnosing it requires already knowing the
+mechanism. The first message is early and exact, the second early and at least says what is
+missing; this one is late and points the wrong way.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c4:ex:5}{Choosing a log level}{Design}
+
+\xpart{a} \code{pr_info}, or \code{dev_info} once there is a device: one line, once per device,
+that says it is there and what it found is useful to whoever reads the log of a system that
+misbehaves. The alternative, \code{pr_debug}, is what many maintainers prefer, on the grounds that a
+working driver should be silent; that argument rests on a log that holds only what needs attention.
+
+\xpart{b} \code{pr_warn}: something unexpected that the driver handled. The device misbehaved and
+somebody may want to know, but the driver carries on. If it can happen on every sample, use
+\code{pr_warn_ratelimited}, or it floods the log.
+
+\xpart{c} \code{pr_err}: an error the driver could not handle. The probe fails and the device will
+not work, so say why, with the error code.
+
+\xpart{d} \code{pr_debug}: only useful during development, compiled to nothing unless dynamic debug
+is built in, and silent until someone switches it on even then.
+
+\xpart{e} \code{pr_warn}: the system works, but not as the device tree describes it, and the device
+tree is what somebody has to fix.
+
+\xpart{f} \textbf{The binary:} a \code{pr_info} you comment out is gone from the build, and getting
+it back means editing and rebuilding. A \code{pr_debug} stays in the binary at the cost of a small
+descriptor per call site and a branch that is patched to a no-op until enabled, and with
+\code{CONFIG_DYNAMIC_DEBUG} off it compiles to nothing at all. \textbf{The field:} on a shipped
+kernel with dynamic debug, those call sites can be switched on at run time on the machine that has
+the problem, for one module, file, function or line, with \code{echo 'module qa_hello +p' >
+/sys/kernel/debug/dynamic_debug/control}, without rebuilding or rebooting. You get the debugging
+output you wrote, from the system that needs it.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c4:ex:8}{A test that cannot fail}{Design}
+
+\xpart{a} 0. The kernel did refuse, \code{delete_module()} failing with \code{EWOULDBLOCK}, which is
+\code{EAGAIN}, because \code{qa_export} has a user; and \code{rmmod} said so, \code{rmmod: remove
+'qa_export': Resource temporarily unavailable}. But this target's BusyBox is built with its
+simplified module tools, whose \code{rmmod} reports the failure and then exits with success
+whatever happened.
+
+\xpart{b} The obvious test is \code{if rmmod qa_export; then} fail. It sees 0 on both kernels, so
+it concludes that the module was unloaded on both: a failure reported against the kernel that
+correctly refused, and the same failure against the one that did not. Its verdict does not depend on
+the kernel at all; what it measures is BusyBox. The same exit status, checked by a test that
+expects an unload to succeed, passes on both, whether anything was unloaded or not, and that is
+the test that cannot fail.
+
+\xpart{c} Assert on the state you care about, not on a tool's report of it; and do not trust a
+test you have never seen fail. The lab's check does both: it looks at \code{lsmod}, the state, and
+the refusal it expects is one it can observe. From \secref{c2:app:a8}: BusyBox's \code{find} has no
+\code{-printf}. A check written on a laptop with GNU \code{find}, which decides that a module is
+gone because \code{find /sys/module -name qa_export -printf x} prints nothing, passes on the target
+whether the module is there or not, because BusyBox's \code{find} rejects the option and prints
+nothing on its standard output either way. It is the same class of problem: the check tests the
+tool, which behaves differently on the machine it was written on and the one it runs on.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c4:ex:9}{How big is a module}{Cross-check}
+
+\textbf{a)}, \textbf{b)} and \textbf{d)} are measurements of your own module, and the course
+publishes no figures for them; what follows is what decides each number.
+
+\xpart{c} The prediction is the sum from \textbf{b)}: the module's code, its read-only data and
+strings, its parameter table, the \code{.note} sections, and its writable data, including the
+\code{.gnu.linkonce.this_module} section that holds its \code{struct module}, which on this kernel is
+over a kilobyte by itself.
+
+\xpart{e} Each of the six:
+\begin{itemize}
+  \item \textbf{The factor} is about five by the exercise's own figure, and the rest of this part is
+    why: the loader rounds the module up in whole pages, not in bytes.
+  \item \textbf{A multiple of 4,096}, the page size, because \code{module_memory_alloc()} rounds each
+    memory type up to whole pages with \code{PAGE_ALIGN} before allocating it. The count is the
+    number of core memory types the module has anything in, one page each as long as none of them
+    holds more than 4,096 bytes, which for a module this small is at most four.
+  \item \textbf{What would have to differ:} one module has something in a memory type the other has
+    nothing in, or more than a page in one type. Between \code{qa_hello} and \code{qa_export} the
+    usual difference is \code{qa_hello}'s \code{pr_debug}. With \code{CONFIG_JUMP_LABEL}, which this
+    kernel has, each \code{pr_debug} call site has an entry in \code{__jump_table}, which the loader
+    treats as read-only after init, a type of its own; a \code{qa_export} with no \code{pr_debug}
+    has nothing of that type and needs a page fewer. Exporting does not add a type: the export
+    tables are read-only data, which both modules already have.
+  \item \textbf{The groups:} one per memory type the module uses. Sections of a type sit together at
+    small offsets: code (\code{.text}, \code{.exit.text}), read-only data (\code{.rodata},
+    \code{__param}, the \code{.note} sections), read-only after init (\code{__jump_table}), and
+    writable data (\code{.data}, \code{.bss}, \code{.gnu.linkonce.this_module}). The init sections
+    are listed too, at addresses that have already been freed. Between groups the addresses jump,
+    because each type is a separate allocation from the module area, and vmalloc leaves an unmapped
+    guard page after every allocation; where two sit next to each other, a one-page group is
+    followed by the next two pages further on. A module is not one block but one allocation per
+    memory type, each a whole number of pages.
+  \item \textbf{\code{enum mod_mem_type}} has seven entries before \code{MOD_MEM_NUM_TYPES}: four
+    core types, \code{MOD_TEXT}, \code{MOD_DATA}, \code{MOD_RODATA} and \code{MOD_RO_AFTER_INIT},
+    and three init types. So the core size of a small module is 4,096 times the number of core types
+    it uses, four pages at most. The allocation is \code{ptr = execmem_alloc(execmem_type, size);}
+    in \code{module_memory_alloc()}, with \code{size} set by \code{PAGE_ALIGN} two lines earlier.
+  \item \textbf{Why:} permissions are set per page. Code must be executable and read-only, read-only
+    data neither writable nor executable, writable data not executable, and read-only-after-init
+    data writable until init finishes and read-only after. A page holding two of them would need
+    two permissions at once, which would leave code writable or data executable, exactly what
+    \code{CONFIG_STRICT_MODULE_RWX} forbids; the loader sets them type by type in
+    \file{kernel/module/strict_rwx.c}. The kernel's own image is laid out in separately aligned
+    segments for the same reason (Exercise~\ref{c3:ex:9}).
+\end{itemize}
+
+\xpart{f} The init sections held \code{qa_hello_init} and anything marked \code{__initdata}. Once
+the init function has returned, the loader frees them and sets the size of each init type to zero,
+and \code{initsize} is the sum of those sizes. It is Exercise~\ref{c4:ex:1}\textbf{d)} in miniature:
+the same annotation and the same freeing, done for one module by the loader after its init rather
+than once by the kernel at the end of boot.
+
+\xpart{g} The \code{coresize}, which is also the size in \file{/proc/modules}: ``the driver
+occupies this many pages of kernel memory while it is loaded''. It is what the kernel actually
+allocated and keeps; the file includes symbol tables and metadata that are never loaded, and the
+sum of the sections leaves out the rounding to pages. With a 64 KB \code{kmalloc} in init, the
+answer is the \code{coresize} plus 65,536 bytes: 64 KiB is above the largest \code{kmalloc} cache,
+which is 8 KiB with 4 KiB pages, so it comes straight from the page allocator as sixteen pages, with
+no rounding. None of the three numbers changes, apart from the few bytes of code the call adds,
+because all three describe the module's own image: memory it allocates at run time belongs to the
+allocator, and appears nowhere under \file{/sys/module}.

@@ -1,0 +1,250 @@
+% Section 7.4, from lectures/L07/appendix/c_exercises.md.
+
+\section{Exercises}
+\label{c7:sec:exercises}\label{c7:app:c}
+
+\begin{aside}
+Nine, ending with the Cross-check. Do them in order; Exercise~\ref{c7:ex:6} onwards need the target
+running.
+
+Where an exercise can be checked mechanically, a \textbf{Check yourself} line says how.
+
+\textbf{Solutions.} The exercises that are not Code are answered in \secref{sol:sec:c7}. The Code
+exercises have no solution: each is checked by running it, as its Check yourself line says.
+\end{aside}
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{Where concurrency comes from}{Recall}
+\label{c7:ex:1}
+
+\xpart{a} Name the five sources of concurrency from \S\ref{c7:app:a1}. Which of them exist on a
+single-CPU kernel built with \code{PREEMPT_NONE}?
+
+\xpart{b} A driver written in 2004 for a single-CPU non-preemptible kernel is copied into a modern
+one. Name the two assumptions it makes silently, and say what breaks.
+
+\xpart{c} Your driver's \code{read()} and its interrupt handler both touch the same buffer. Which of
+the five sources is in play, and does the answer change on a single-CPU machine?
+
+\xpart{d} \code{counter++} is one line of C. How many machine operations is it, and which of them
+can be interleaved with another CPU's copy of the same three?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{Atomics and their limits}{Recall}
+\label{c7:ex:2}
+
+\xpart{a} \code{atomic_inc} fixes a shared counter completely. Give a data structure it does not
+fix, and state the invariant that spans more than one variable.
+
+\xpart{b} Rewrite this so it is correct, and say which primitive you used and why:
+
+\begin{ccode}
+if (atomic_read(&level) < capacity) {
+        data[(atomic_read(&head) + atomic_read(&level)) % capacity] = byte;
+        atomic_inc(&level);
+}
+\end{ccode}
+
+\xpart{c} State the rule that separates ``use an atomic'' from ``use a lock'', in one sentence.
+
+\xpart{d} \code{while (!flag) \{ \}} never terminates even though another thread sets \code{flag}.
+Explain, and give the fix. Is the fix a memory barrier?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{Choosing a primitive}{Hand calculation}
+\label{c7:ex:3}
+
+For each, choose a spinlock, a spinlock with \code{_irqsave}, or a mutex, and justify it in one
+sentence.
+
+\xpart{a} Protecting a counter touched only by two kernel threads.
+
+\xpart{b} Protecting a buffer touched by \code{read()} and by an interrupt handler.
+
+\xpart{c} Protecting a structure while copying 4 KB of it to userspace.
+
+\xpart{d} Protecting a device register sequence that takes about 2 microseconds.
+
+\xpart{e} Protecting a list that is walked in a timer callback and modified from \code{write()}.
+
+\xpart{f} Protecting a structure while allocating memory that may have to be reclaimed.
+
+Then: \textbf{g)} two of your answers would deadlock the machine if you had chosen a plain
+\code{spin_lock}. Which, and describe the deadlock in each case.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{What the race costs}{Hand calculation}
+\label{c7:ex:4}
+
+Four threads each increment a shared counter 20,000 times, unlocked.
+
+\xpart{a} What is the expected final value if nothing is lost?
+
+\xpart{b} A run reports \code{actual=63562}. How many increments were lost, and what percentage is
+that?
+
+\xpart{c} Ten runs on the same machine with the same code produced losses of 1,564; 6,471; 9,708;
+12,278; 16,438; 16,805; 17,285; 17,475; 26,545; and 30,047. Compute the range as a percentage of the
+expected total. What does the spread tell you that any single run does not?
+
+\xpart{d} Can the loss ever be zero? Can it ever be 60,000? Justify both from what a lost update is.
+
+\xpart{e} A colleague runs the unlocked version once, gets exactly 80,000, and concludes the lock is
+unnecessary. Name the two separate errors in that reasoning.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{Atomic context}{Design}
+\label{c7:ex:5}
+
+For each, say whether the code is in atomic context, and whether the call is legal there.
+
+\xpart{a} \code{kmalloc(64, GFP_KERNEL)} inside \code{read()}.
+
+\xpart{b} \code{kmalloc(64, GFP_KERNEL)} inside an interrupt handler.
+
+\xpart{c} \code{kmalloc(64, GFP_ATOMIC)} inside an interrupt handler.
+
+\xpart{d} \code{mutex_lock} while holding a spinlock.
+
+\xpart{e} \code{spin_lock} while holding a mutex.
+
+\xpart{f} \code{copy_to_user} while holding a spinlock.
+
+\xpart{g} \code{msleep(1)} inside a timer callback.
+
+Then: \textbf{h)} on a kernel without debugging options, three of the illegal ones will usually
+work in testing. Which, why, and what makes each fail later? \textbf{i)} Which config option that
+this course enables would have reported them the first time?
+
+% ------------------------------------------------------------------------------------------
+\exercise{Race a counter, then fix it}{Code}
+\label{c7:ex:6}
+
+Write \file{lectures/L07/lab/qa_race.c}. It must:
+\begin{itemize}
+  \item Take module parameters \code{threads} (default 4), \code{increments} (default 20000) and
+    \code{locked} (default 0), all read-only through sysfs.
+  \item Start \code{threads} kernel threads with \code{kthread_run}, each incrementing a single
+    shared \code{unsigned long} \code{increments} times.
+  \item With \code{locked=0}, increment it without any protection. With \code{locked=1}, protect it
+    with a spinlock.
+  \item \textbf{Release all the threads from a barrier}, so that they start together. Without this
+    the first thread often finishes before the last is created and the race does not happen at all;
+    see \S\ref{c7:app:a2}.
+  \item Wait for all of them to finish, then print exactly: \code{locked=\%d threads=\%d
+    increments=\%d expected=\%lu actual=\%lu lost=\%lu}.
+\end{itemize}
+
+\checkyourself with \code{locked=1} the loss is 0 every time. With \code{locked=0} it is not.
+\code{make test L=L07} runs the unlocked version three times and requires that at least one of them
+loses something.
+
+\xpart{a} Before adding the barrier, run the unlocked version three times and record the losses.
+Then add it and run three more. Report both sets.
+
+\xpart{b} Try \code{threads=1}. What loss do you get, and why is that not evidence of anything?
+
+\xpart{c} Try \code{threads=8} on a two-CPU target. Does the loss go up in proportion to the
+threads? Explain what actually limits it.
+
+% ------------------------------------------------------------------------------------------
+\exercise{Make lockdep object}{Code}
+\label{c7:ex:7}
+
+Write \file{lectures/L07/lab/qa_abba.c}. It must define two spinlocks, take them in one order and
+release them, then take them in the opposite order and release them, all from its init function on a
+\textbf{single thread}, and print a message before and after.
+
+\checkyourself the module loads successfully, \code{lsmod} shows it, and \code{dmesg} contains
+\code{WARNING: possible circular locking dependency detected} and a \code{*** DEADLOCK ***} diagram.
+
+\xpart{a} The module loaded and did not hang. Explain why lockdep reported a deadlock anyway.
+
+\xpart{b} The report's diagram has a CPU0 column and a CPU1 column. How many CPUs actually executed
+your code? What are those two columns, then?
+
+\xpart{c} Find the two \code{qa_abba_init+0x...} offsets in the report's dependency chain. What is
+each one telling you, and why are they different?
+
+\xpart{d} Reload the module a second time without rebooting. Does the report appear again? Explain
+in terms of what lockdep is storing.
+
+\xpart{e} Now fix the module so both sections take the locks in the same order. Confirm the report
+is gone. Has your module's behaviour changed in any observable way other than the absence of the
+warning?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{What the tools do not see}{Design}
+\label{c7:ex:8}
+
+\xpart{a} \code{qa_race} loses up to 38\% of its increments with lockdep fully enabled, and lockdep
+says nothing at all. Explain why, precisely.
+
+\xpart{b} State the general limitation that follows, and say what it implies about a codebase that
+``passes with lockdep enabled''.
+
+\xpart{c} Name two kinds of deadlock lockdep cannot find, and say why each is outside its model.
+
+\xpart{d} Lockdep only sees code that runs. Which parts of a driver are least likely to be exercised
+by a test suite, and why does that matter more for lock ordering than for most bugs?
+
+\xpart{e} A development kernel has a proprietary module loaded. What has silently happened to
+lockdep, what is the single line of \code{dmesg} that said so, and which chapter did you first meet
+it in?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent]{A number computed twice}{Cross-check}
+\label{c7:ex:9}
+
+Predict a total by arithmetic, measure it, and account for the difference. Unlike the earlier
+Cross-checks the disagreement here is not a rounding artefact; it is the bug.
+
+\xpart{a} \textbf{Predict.} With \code{threads=4} and \code{increments=20000}, compute the expected
+final counter. This is one multiplication and it is not the interesting part; write it down anyway,
+because it is the number everything else is measured against.
+
+\xpart{b} \textbf{Measure, locked.} Load with \code{locked=1} and record \code{actual}. Run it three
+times.
+
+\xpart{c} \textbf{Measure, unlocked.} Load with \code{locked=0} and record \code{actual} five times.
+
+\xpart{d} \textbf{Reconcile.} Answer each:
+\begin{itemize}
+  \item The locked runs agree with your prediction exactly, every time. Why is ``exactly'' the right
+    word here, rather than ``to within measurement error''? What is different about this measurement
+    compared to Chapter~\ref{c3:ch}'s \code{Image} size or Chapter~\ref{c2:ch}'s context-switch
+    rate?
+  \item The unlocked runs disagree with your prediction and with each other. Compute the mean and
+    the range. Is the mean a useful number? What would you have to say alongside it for it to mean
+    anything?
+  \item In the interleaving drawn in \secref{c7:app:a2}, a collision loses exactly one increment. If
+    every collision were of that kind, how many times did two threads collide in your worst run? A
+    thread preempted between its load and its store erases every increment made while it was off
+    the CPU; what does that make your figure, a count or a bound? Is it plausible given the run took
+    a few hundred milliseconds?
+\end{itemize}
+
+\xpart{e} \textbf{Change one variable at a time.} Rerun the unlocked version three times each at
+\code{increments=200}, \code{2000}, \code{20000} and \code{200000}, keeping \code{threads=4}. Report
+the loss as a \emph{percentage} of the expected total in all twelve runs.
+
+The result is not the smooth curve most people predict. Answer these:
+\begin{itemize}
+  \item At which values does the loss appear at all, and what happens below that?
+  \item You now have a configuration in which the unlocked program is \textbf{correct every single
+    time}. Is the bug absent at that size? What is actually different?
+  \item The threads are released from a barrier, so they genuinely start together. Given that,
+    explain why a short run still does not collide. How long does the overlap have to last, and what
+    is it competing against?
+  \item Someone testing this code would naturally use a small number of iterations, because it is
+    faster. Say what they would conclude and how confident they would be.
+\end{itemize}
+
+\xpart{f} \textbf{The prediction that matters.} You now have a measurement whose value you cannot
+predict, and a measurement whose value you can. Say which of the two you would put in a bug report
+and which you would put in a test, and why they are not the same choice.
+
+\xpart{g} A colleague proposes fixing \code{qa_race} by making the counter \code{atomic_t} instead
+of adding a lock. For this specific program, would that work? Now suppose the threads also had to
+keep a running maximum alongside the counter. Would it still work? Which section answers
+this, and what is the one-sentence rule?

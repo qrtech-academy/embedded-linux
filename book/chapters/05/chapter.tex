@@ -1,0 +1,48 @@
+% Chapter 5, typeset from lectures/L05: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{Character Device Drivers}
+\label{c5:ch}
+
+{\large\itshape The oldest and simplest interface a driver can present to userspace, and everything
+it implies.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item Major and minor numbers, and what each of them selects.
+  \item \code{struct file_operations}, and the fact that a driver is a table of callbacks and
+    nothing else.
+  \item \code{open}, \code{release}, \code{read}, \code{write}: what each returns, and what
+    userspace does with it.
+  \item \code{copy_to_user}, and why dereferencing a userspace pointer is a bug rather than a
+    shortcut.
+  \item Which \code{-Exxx} to return, and why the choice is part of the interface.
+  \item The misc device, and when the shortcut is the right answer.
+  \item \code{ioctl}, and why adding a new one is usually the wrong answer.
+  \item A ring buffer, and the KUnit suite that tests it.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is about the oldest and simplest interface a driver can present to userspace: a node in
+\file{/dev}, a table of callbacks behind it, and what each of those callbacks owes its caller. It
+explains what the two numbers on a node select, how a driver registers a \code{struct
+file_operations} against them, and why the value \code{read()} returns is the interface rather than
+a detail of it. It shows why a pointer handed in from userspace must never be followed directly,
+which error code answers which failure, when the misc device is the right shortcut, and why a new
+\code{ioctl} is usually the wrong answer.
+
+Read \secref{c5:app:a} first; it is the character device interface. \Secref{c5:app:b} then
+specifies the lab in prose, every function, what it returns and what it must do at the boundaries:
+a byte ring buffer, checked by a KUnit suite that ships with the course, and a character device
+that exposes it at \file{/dev/qa_fifo}, checked by a userspace tester. The header that declares the
+ring buffer is part of that specification, and is printed in \secref{c5:app:b1}. The exercises in
+\secref{c5:sec:exercises} end with the Cross-check: work out by hand what a sequence of five calls
+must return, then write a program that performs it and reconcile the two. One of the five is not
+what almost anyone predicts. The lab is done when \code{make test L=L05} reports \textbf{PASSED},
+with the KUnit suite reporting \textbf{10 of 10}.
+
+\input{chapters/05/character_devices}
+\input{chapters/05/the_driver}
+\input{chapters/05/summary}
+\input{chapters/05/exercises}

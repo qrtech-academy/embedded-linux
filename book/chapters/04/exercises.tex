@@ -1,0 +1,260 @@
+% Section 4.3, from lectures/L04/appendix/b_exercises.md.
+
+\section{Exercises}
+\label{c4:sec:exercises}\label{c4:app:b}
+
+\begin{aside}
+Nine, ending with the Cross-check. Do them in order; Exercise~\ref{c4:ex:6} onwards need the modules
+from the lab.
+
+Where an exercise can be checked mechanically, a \textbf{Check yourself} line says how. Several have
+a plausible wrong answer that is worth walking into before you find it.
+
+Everything here runs against the target from \code{make boot}, or against the built tree under
+\file{build/kernel}. Nothing needs the network.
+
+\textbf{Solutions.} The exercises that are not Code are answered in \secref{sol:sec:c4}. The Code
+exercises have no solution: each is checked by running it, as its Check yourself line says.
+\end{aside}
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{A module is not a program}{Recall}
+\label{c4:ex:1}
+
+\xpart{a} \code{qa_hello_init} returns 0. What is running afterwards, and what is resident?
+
+\xpart{b} Why is it a mistake to put a \code{while (1)} loop in a module's init function? What
+should you have written instead, and what happens to \code{insmod} if you do it anyway?
+
+\xpart{c} What do \code{__init} and \code{__exit} actually do? Neither is a hint to the reader.
+
+\xpart{d} The boot log says \code{Freeing unused kernel memory: 4672K}. What relationship does that
+message have to \code{__init}?
+
+\xpart{e} Name the four \code{MODULE_*} macros from the lab's module, and say which one is not
+optional and what happens if you leave it out.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{Four commands}{Recall}
+\label{c4:ex:2}
+
+\xpart{a} State in one sentence each what \code{insmod}, \code{modprobe}, \code{depmod} and
+\code{rmmod} do.
+
+\xpart{b} \code{insmod} and \code{modprobe} are often described as the same command. Give the
+concrete difference, and describe the experiment that demonstrates it using the lab's
+\code{qa_export} and \code{qa_user}.
+
+\xpart{c} What file does \code{modprobe} read to decide what to load first, and what generates it?
+
+\xpart{d} \code{rmmod qa_export} fails while \code{qa_user} is loaded. Where, in \file{/sys}, can
+you see \emph{which} module is holding it, rather than merely how many are?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{Reading \code{vermagic}}{Hand calculation}
+\label{c4:ex:3}
+
+\code{modinfo} on the lab's module reports:
+
+\begin{console}
+vermagic: 6.12.30 SMP preempt mod_unload modversions aarch64
+\end{console}
+
+\xpart{a} Name what each of the six fields is asserting about the kernel this module may be loaded
+into.
+
+\xpart{b} For each of the following changes to the kernel, say whether this module would still load,
+and why:
+\begin{itemize}
+  \item The kernel is rebuilt from the same source with no config change.
+  \item The kernel is rebuilt with \code{\# CONFIG_SMP is not set} in \file{kernel/local.config}.
+    Read \file{arch/arm64/Kconfig} before answering.
+  \item The kernel is upgraded from 6.12.30 to 6.12.31.
+  \item The kernel is rebuilt with \code{CONFIG_PREEMPT_RT=y} instead of \code{CONFIG_PREEMPT=y}.
+\end{itemize}
+
+\xpart{c} \code{modversions} appears in the list. What does \code{CONFIG_MODVERSIONS} add beyond the
+version string, and what problem does it solve that \code{vermagic} alone does not?
+
+\xpart{d} Explain why a mismatch is reported as an error rather than being allowed with a warning.
+What is the failure mode that policy is protecting you from?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{The licence, at two stages}{Hand calculation}
+\label{c4:ex:4}
+
+A module declares \code{MODULE_LICENSE("Proprietary")} and calls a function exported with
+\code{EXPORT_SYMBOL_GPL}.
+
+\xpart{a} You build it in the same directory as the module that exports the symbol. What happens, at
+which build step, and what exactly does the message say?
+
+\xpart{b} You build it in a directory of its own, where the build cannot see the exporting module's
+symbols. What happens now, and why is it a \emph{different} message?
+
+\xpart{c} Neither of those produced a \code{.ko}. Describe the circumstances in which a proprietary
+module using a GPL-only symbol does build successfully and then fails at \code{insmod}.
+
+\xpart{d} In that case, what does \code{insmod} print? Read \secref{c4:app:a5} and say why the
+message does not mention a licence, in terms of what the module loader actually does with GPL-only
+symbols.
+
+\xpart{e} Why is that the worst of the three messages to receive?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{Choosing a log level}{Design}
+\label{c4:ex:5}
+
+For each, choose from \code{pr_debug}, \code{pr_info}, \code{pr_warn}, \code{pr_err}, and justify it
+in one sentence.
+
+\xpart{a} The driver has probed successfully and is ready.
+
+\xpart{b} A device returned a value outside its documented range, and you clamped it.
+
+\xpart{c} \code{ioremap} returned NULL and \code{probe} is about to fail.
+
+\xpart{d} You want to print the value of every register during development.
+
+\xpart{e} The device tree specified a clock rate the hardware cannot produce, so you used the
+nearest.
+
+Then: \textbf{f)} why is \code{pr_debug} not simply \code{pr_info} that you comment out before
+shipping? Give two reasons, one about the binary and one about the field.
+
+% ------------------------------------------------------------------------------------------
+\exercise{Your first module}{Code}
+\label{c4:ex:6}
+
+Write \file{lectures/L04/lab/qa_hello.c}. It must:
+\begin{itemize}
+  \item Print a greeting from its init function and a farewell from its exit function.
+  \item Take a string parameter \code{who}, defaulting to \code{world}, readable but \textbf{not}
+    writable via sysfs.
+  \item Take an integer parameter \code{count}, defaulting to 1, readable \textbf{and} writable via
+    sysfs, that controls how many times the greeting is printed.
+  \item Carry \code{MODULE_LICENSE}, \code{MODULE_AUTHOR}, \code{MODULE_DESCRIPTION} and
+    \code{MODULE_VERSION}.
+  \item Use \code{pr_fmt} so every message is prefixed with the module name, and contain one
+    \code{pr_debug} that says something only useful when switched on.
+\end{itemize}
+
+\checkyourself \code{insmod ./qa_hello.ko who=embedded count=2} prints the greeting twice; \code{cat
+/sys/module/qa_hello/parameters/who} returns \code{embedded}; writing to that file fails with
+\code{Permission denied}, and writing to \code{count} succeeds.
+
+% ------------------------------------------------------------------------------------------
+\exercise{One module using another}{Code}
+\label{c4:ex:7}
+
+Write \file{qa_export.c}, which exports \code{qa_answer()} returning 42 with
+\code{EXPORT_SYMBOL_GPL}, and \file{qa_user.c}, which calls it from its init function and prints the
+result.
+
+\xpart{a} Load them in the wrong order deliberately. Record the exact error.
+
+\xpart{b} Load them in the right order, then try to \code{rmmod} them in the wrong order. Record
+what happens, and find the holder in \file{/sys}.
+
+\xpart{c} \file{qa_export.c} also exports \code{qa_answer_open()} with plain \code{EXPORT_SYMBOL}.
+Write a third module declaring \code{MODULE_LICENSE("Proprietary")} that calls \textbf{only} that
+one. Does it build? Does it load?
+
+\xpart{d} Read \file{/proc/sys/kernel/tainted} before loading anything, after loading
+\code{qa_export}, and after loading the proprietary one. You get three different numbers. Decompose
+each into bits, and name the two taints involved using \file{include/linux/panic.h}. Then look at
+the flags in \file{/proc/modules} and in \code{/sys/module/<name>/taint}: which letters appear
+against which module, and why does the proprietary module carry two?
+
+\xpart{e} Loading the proprietary module prints one further line that is not about licensing at all:
+
+\begin{console}
+Disabling lock debugging due to kernel taint
+\end{console}
+
+\noindent Find out what was disabled. Then say what that means for Chapter~\ref{c7:ch}, which is
+built entirely on that facility, and state the rule it implies for a development kernel.
+
+\checkyourself \code{make test L=L04} passes, with twelve checks. Note that its check on
+\code{rmmod} deliberately asserts on \code{lsmod} rather than on \code{rmmod}'s exit status;
+Exercise~\ref{c4:ex:8} is why.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{A test that cannot fail}{Design}
+\label{c4:ex:8}
+
+The lab's \file{run.sh} checks that a module in use cannot be unloaded. It does so by attempting the
+\code{rmmod} and then looking at \code{lsmod}, rather than by checking \code{rmmod}'s exit status.
+
+\xpart{a} Run \code{rmmod qa_export} while \code{qa_user} is loaded, then immediately \code{echo
+$?}. What do you get?
+
+\xpart{b} Given that, what would a test written the obvious way conclude, on a kernel that correctly
+refused \emph{and} on one that wrongly allowed it?
+
+\xpart{c} Name the general rule this is an instance of, and give one other example from
+\secref{c2:app:a8} of the same class of problem.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent]{How big is a module}{Cross-check}
+\label{c4:ex:9}
+
+Three measurements of the same module, differing by a factor of five. Predict, measure, reconcile.
+
+\xpart{a} \textbf{The file.} With the lab built, record the size of \file{qa_hello.ko} on disk.
+
+\xpart{b} \textbf{The content.} Run \code{size -A} on it, in the container so you get the cross
+toolchain's version:
+
+\begin{shell}
+aarch64-linux-gnu-size -A lectures/L04/lab/qa_hello.ko
+\end{shell}
+
+\noindent Record the \code{Total}. Then record the sum of only those sections that will actually be
+\textbf{loaded}: leave out \code{.modinfo}, \code{__versions} and \code{.comment}, which are
+metadata the loader reads and does not keep, and \code{.symtab} and \code{.strtab}, of which it
+keeps only a small copy for \file{/proc/kallsyms}. The \code{.note.*} sections are kept, and are
+small.
+
+\xpart{c} \textbf{Predict.} From \textbf{b)}, write down what you expect the module to occupy in
+kernel memory once loaded.
+
+\xpart{d} \textbf{Measure.} Boot, load the module, and read its actual size two ways:
+
+\begin{shell}
+grep qa_hello /proc/modules
+cat /sys/module/qa_hello/coresize
+\end{shell}
+
+\xpart{e} \textbf{Reconcile.} Answer each:
+\begin{itemize}
+  \item By what factor does the measured size exceed your prediction?
+  \item The measured number is round. What is it a multiple of, and how many of them?
+  \item Load \code{qa_export} and compare \emph{its} \code{coresize} with \code{qa_hello}'s. They
+    are not the same multiple. Before reading further, say what would have to differ between two
+    modules for one to need more of these units than the other.
+  \item Now find out why. List the section addresses and sort them:
+\begin{shell}
+for f in /sys/module/qa_hello/sections/.*; do
+    echo "$(cat "$f" 2>/dev/null) $(basename "$f")"
+done | sort
+\end{shell}
+
+    The addresses fall into distinct groups. How many groups, what is in each, and what is the
+    spacing between them? What does that tell you about how a module is laid out in memory?
+  \item \file{include/linux/module.h} defines \code{enum mod_mem_type}. How many of its entries are
+    \emph{core} types rather than init types, and how does that number relate to what you measured?
+    The allocation itself is one line in \file{kernel/module/main.c}; find it.
+  \item Why is the module laid out this way rather than packed into one contiguous region? The
+    answer is about permissions, and it is the same reason the kernel's own \code{.text} and
+    \code{.data} are separate.
+\end{itemize}
+
+\xpart{f} \file{/sys/module/qa_hello/initsize} reads 0 after the module has finished loading, even
+though the module plainly has an init function. What happened to it, and what does that have to do
+with Exercise~\ref{c4:ex:1}(d)?
+
+\xpart{g} Someone asks how much memory your driver uses. Give a single number and a sentence, and
+say which of your three measurements you chose and why. Then say what your answer would be if the
+driver also allocated a 64 KB buffer with \code{kmalloc} in its init function, and which of the
+three numbers would have changed.

@@ -1,0 +1,217 @@
+% Section 9.2, from lectures/L09/appendix/b_time.md.
+
+\section{Time, Delays and Timers}
+\label{c9:app:b}
+
+Four ways to say ``later'', how much later each of them actually means, and why the difference is
+larger than anyone expects.
+
+Every number here was measured on this course's target with the lab's \code{qa_timing} module, at
+\code{HZ=250}. Yours will match, because they are properties of the configuration rather than of the
+machine.
+
+\subsection{Jiffies, and why not to quote them}
+\label{c9:app:b1}
+
+The kernel counts ticks in a global \code{jiffies}. The tick rate is \code{HZ}, a compile-time
+constant:
+
+\begin{console}
+# zcat /proc/config.gz | grep '^CONFIG_HZ='
+CONFIG_HZ=250
+\end{console}
+
+\noindent so on this kernel \textbf{one jiffy is 4 milliseconds}. Common values are 100, 250, 300
+and 1000, and which one a distribution picks is a trade between timer resolution and tick overhead.
+
+\textbf{A jiffy is not a unit of time.} It is a unit of ticks, and the same code on a \code{HZ=1000}
+kernel waits a quarter as long. Any duration you care about should be written in real units and
+converted:
+
+\begin{ccode}
+unsigned long timeout = jiffies + msecs_to_jiffies(500);
+if (time_after(jiffies, timeout)) { /* ... */ }
+\end{ccode}
+
+\noindent \code{time_after} and \code{time_before} rather than \code{<} and \code{>}, because
+\code{jiffies} wraps. On a 32-bit counter at \code{HZ=250} that is once every 199 days, and the
+comparison macros handle it; a naive comparison produces a driver that misbehaves twice a year.
+
+\subsection{\code{ktime}, for measuring}
+\label{c9:app:b2}
+
+Jiffies are for \emph{scheduling}. For \emph{measuring}, use \code{ktime}, which is nanoseconds:
+
+\begin{ccode}
+ktime_t start = ktime_get();
+/* ... */
+s64 us = ktime_us_delta(ktime_get(), start);
+\end{ccode}
+
+\begin{booktable}{@{}>{\hsize=0.74\hsize}L>{\hsize=1.11\hsize}L>{\hsize=1.15\hsize}L@{}}
+  \thead{Clock} & \thead{Reads} & \thead{Use for} \\
+  \midrule
+  \code{ktime_get} & Monotonic since boot & \textbf{Intervals.} Always this one \\
+  \code{ktime_get_real} & Wall-clock time & Timestamps a human will read \\
+  \code{ktime_get_boottime} & Monotonic, includes suspend & Intervals across a sleep \\
+\end{booktable}
+
+\noindent \textbf{Measure intervals with the monotonic clock.} Wall-clock time can jump forwards or
+backwards when NTP corrects it or somebody sets the date, and an interval computed across that is
+nonsense, occasionally negative. This is the same rule userspace has with \code{CLOCK_MONOTONIC},
+and it is the one Chapter~\ref{c12:ch} depends on entirely.
+
+\subsection{Delaying against sleeping}
+\label{c9:app:b3}
+
+Two families, and confusing them is a correctness bug rather than a performance one.
+
+\begin{booktable}{@{}>{\hsize=0.87\hsize}LlL>{\hsize=1.11\hsize}L@{}}
+  \thead{Function} & \thead{Mechanism} & \thead{Context} & \thead{Costs} \\
+  \midrule
+  \code{udelay(n)} & Busy-wait & \textbf{Any}, including atomic & A CPU, entirely \\
+  \code{mdelay(n)} & Busy-wait & Any & A CPU, for milliseconds \\
+  \code{msleep(n)} & Timer wheel & Process context only & Nothing \\
+  \code{usleep_range(a, b)} & hrtimer & Process context only & Nothing \\
+\end{booktable}
+
+\noindent \textbf{The \code{delay} family burns a CPU} and is legal in atomic context precisely
+because it never sleeps. \textbf{The \code{sleep} family gives the CPU up} and cannot be used where
+sleeping is forbidden.
+
+The rule: \textbf{use \code{udelay} only for short hardware delays in code that cannot sleep}, and
+only for a few microseconds. \code{udelay(5000)} is legal, compiles, works, and spends five
+milliseconds of a CPU doing nothing, which is a real-time problem that Chapter~\ref{c12:ch} will
+come back to. \code{mdelay} exists mostly so that its name can warn you.
+
+\subsection{What the sleeps actually cost}
+\label{c9:app:b4}
+
+This is the measurement that surprises people. From the lab's \code{qa_timing}, 200 repetitions of
+each, at \code{HZ=250} where one jiffy is 4000 us:
+
+\begin{narrowtable}{@{}lrrr@{}}
+  \thead{Call} & \thead{Asked for} & \thead{Measured, each} & \thead{Ratio} \\
+  \midrule
+  \code{msleep(1)} & 1,000 us & \textbf{8,000 us} & 8.0$\times$ \\
+  \code{msleep(4)} & 4,000 us & \textbf{8,000 us} & 2.0$\times$ \\
+  \code{msleep(10)} & 10,000 us & 15,998 us & 1.6$\times$ \\
+  \code{usleep_range(1000)} & 1,000 us & 1,443 us & 1.4$\times$ \\
+  \code{usleep_range(100)} & 100 us & 307 us & 3.1$\times$ \\
+  \code{udelay(100)} & 100 us & 112 us & 1.1$\times$ \\
+\end{narrowtable}
+
+\noindent \textbf{\code{msleep(1)} and \code{msleep(4)} take exactly the same time.} Asking for a
+quarter as long got nothing. That single row is the most useful thing in this section:
+\code{msleep} is quantised to jiffies, and below one jiffy the argument stops carrying information.
+
+The arithmetic is exact and you can reproduce it. \code{msecs_to_jiffies} rounds \textbf{up}:
+
+\begin{narrowtable}{@{}llll@{}}
+  \thead{Call} & \thead{\code{msecs_to_jiffies}} & \thead{Plus the guarantee} & \thead{Total} \\
+  \midrule
+  \code{msleep(1)} & 1 jiffy & $+1$ & 2 jiffies = 8 ms \\
+  \code{msleep(4)} & 1 jiffy & $+1$ & 2 jiffies = 8 ms \\
+  \code{msleep(10)} & 3 jiffies & $+1$ & 4 jiffies = 16 ms \\
+\end{narrowtable}
+
+\noindent Where the extra jiffy comes from is worth knowing, because it is not in \code{msleep}'s
+source. \code{schedule_timeout}'s own documentation says:
+
+\begin{quote}
+at least \code{@timeout} jiffies are guaranteed to pass before the routine returns
+\end{quote}
+
+\noindent\textbf{``At least'' is the whole answer.} You call it partway through a jiffy, and the kernel does
+not know how far through. To guarantee that N jiffies have \emph{elapsed}, it must wait for N+1
+ticks. The overshoot is the price of a guarantee that never returns early.
+
+\textbf{\code{usleep_range} is the fix}, and the table shows why: it uses hrtimers rather than the
+jiffy wheel, so a 1 ms request costs 1.4 ms instead of 8 ms. It takes a range because giving the
+kernel slack lets it coalesce your timer with others already due, which saves wakeups on a system
+trying to stay idle. Use it for anything between about 10 us and 20 ms; \code{msleep} above that,
+where the jiffy quantum stops mattering.
+
+\lecturefigure[0.78]{lectures/L09/appendix/images/sleep_cost.png}
+  {Horizontal bars comparing what each call asked for against what it measured, on a logarithmic axis,
+   with dashed lines at two and four jiffies. \code{msleep(1)} and \code{msleep(4)} both land on 8,000
+   microseconds, and \code{msleep(10)} on 15,998.}
+  {fig:sleep_cost}
+
+\subsection{Timers}
+\label{c9:app:b5}
+
+Two kinds, and the difference is the same jiffy-against-nanosecond split.
+
+\subsubsection{\code{timer_list}, on the jiffy wheel}
+\label{c9:app:b:timer_list-on-the-jiffy-wheel}
+
+\begin{ccode}
+static struct timer_list my_timer;
+
+timer_setup(&my_timer, my_callback, 0);
+mod_timer(&my_timer, jiffies + msecs_to_jiffies(500));
+\end{ccode}
+
+\noindent Resolution is a jiffy, and the wheel deliberately batches timers into buckets, so a long
+timeout may be rounded by a noticeable fraction. That is a feature: it lets an idle system stay
+idle.
+
+\textbf{The callback runs in softirq context}, so it may not sleep, may not take a mutex, and may
+not call \code{copy_to_user}. This catches people, because the code around a timer is usually
+process context and the callback looks like it belongs to it.
+
+\code{timer_delete_sync} before freeing anything the callback touches, and note the \emph{sync}: it
+waits for a callback already running on another CPU. \code{timer_delete} alone can return while the
+callback is still executing on the memory you are about to free. Most code you will read calls them
+\code{del_timer_sync} and \code{del_timer}, the old names, which 6.12 keeps as wrappers marked not
+for new code.
+
+\subsubsection{\code{hrtimer}, on real time}
+\label{c9:app:b:hrtimer-on-real-time}
+
+\begin{ccode}
+hrtimer_init(&my_hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+my_hrtimer.function = my_callback;
+hrtimer_start(&my_hrtimer, ms_to_ktime(500), HRTIMER_MODE_REL);
+\end{ccode}
+
+\noindent Note that the callback is assigned to the structure rather than passed to the initialiser.
+That is the 6.12 interface; a later kernel introduces \code{hrtimer_setup}, which takes the callback
+as an argument and is what newer material will show you. This is \secref{c3:app:a2}'s unstable
+internal API again, in a function you would meet in your first week.
+
+Nanosecond resolution, backed by a real hardware timer rather than the tick. The callback returns
+\code{HRTIMER_NORESTART} or \code{HRTIMER_RESTART}, which makes periodic timers straightforward.
+
+hrtimers cost more per timer, so the kernel uses the wheel for the many timeouts that never expire
+(network retransmits, mostly) and hrtimers for the few that must be accurate.
+
+\subsubsection{Choosing}
+\label{c9:app:b:choosing}
+
+\begin{booktable}{@{}>{\hsize=0.72\hsize}L>{\hsize=1.28\hsize}L@{}}
+  \thead{Use} & \thead{Because} \\
+  \midrule
+  \code{timer_list} for a timeout & It will usually be cancelled, and precision is irrelevant \\
+  \code{hrtimer} for a deadline & You need the resolution, and it will fire \\
+  Neither, if an interrupt will do & The device already knows when it has data \\
+\end{booktable}
+
+\noindent That last row is worth stating. This course's driver could poll the device on a timer; it
+does not, because Chapter~\ref{c8:ch} gave it an interrupt. \textbf{A timer is what you use when
+nothing tells you.} The exercises ask you to build the timer version anyway and compare, because the
+comparison is the argument.
+
+\subsection{What none of this gives you}
+\label{c9:app:b6}
+
+\textbf{None of it is a guarantee about the maximum.} Everything above is ``at least'', and the
+numbers in \secref{c9:app:b4} are averages over 200 repetitions on an idle machine. What happens to
+the worst case under load is not in this section, is not what \code{msleep} documents, and is the
+subject of Chapter~\ref{c12:ch}.
+
+\textbf{And the measurements themselves contain the emulator.} The 1,443 us for a 1 ms
+\code{usleep_range} is this target's number, and part of it belongs to QEMU rather than to Linux.
+That is the same caution the Cross-check of Chapter~\ref{c8:ch}, Exercise~\ref{c8:ex:9}, arrives at,
+and Chapter~\ref{c12:ch} states it in full.

@@ -1,0 +1,261 @@
+% Section 2.4, from lectures/L02/appendix/c_exercises.md.
+
+\section{Exercises}
+\label{c2:sec:exercises}\label{c2:app:c}
+
+\begin{aside}
+Nine, ending with the Cross-check. Do them in order; the last one needs the script from
+Exercise~\ref{c2:ex:6}.
+
+Several have a plausible wrong answer that is worth walking into before you find it. Where an
+exercise can be checked mechanically, a \textbf{Check yourself} line says how.
+
+Everything here runs on the target. Get a shell with \code{make boot}, and remember that Ctrl-A X
+quits QEMU. A few parts ask you to compare against your own machine, and say so where they do.
+
+\textbf{Solutions.} The exercises that are not Code are answered in \secref{sol:sec:c2}. The Code
+exercises have no solution: each is checked by running it, as its Check yourself line says.
+\end{aside}
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{What the shell does and what it does not}{Recall}
+\label{c2:ex:1}
+
+For each of the following, say whether the \textbf{shell} does it or the \textbf{program} does it,
+and in one sentence why.
+
+\xpart{a} Expanding \code{*.c} into a list of filenames.
+
+\xpart{b} Deciding what to do when given the argument \code{-l}.
+
+\xpart{c} Sending output to a file because the line ended in \code{> out.txt}.
+
+\xpart{d} Changing the current directory.
+
+\xpart{e} Reporting \code{No such file or directory} when a file is missing.
+
+\xpart{f} Substituting the value of \code{$HOME}.
+
+Then: \code{grep foo *.log} is run in a directory containing no \code{.log} files at all. What does
+\code{grep} receive as its arguments, and what happens?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{Pipelines}{Recall}
+\label{c2:ex:2}
+
+\xpart{a} How many processes does \code{ps | grep sh | wc -l} create, and how many pipes?
+
+\xpart{b} In the two-stage pipeline \code{A | B}, the shell closes both ends of the pipe after
+forking both children. Name what breaks if it does not close the \emph{write} end, and say which
+process suffers.
+
+\xpart{c} \code{yes | head -1} terminates promptly rather than filling memory. Explain the
+mechanism, in terms of what happens to the writer.
+
+\xpart{d} \code{grep pattern file | wc -l} returns exit status 0 even when \code{grep} matched
+nothing. Why, and what would you add to a script to make that a failure?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{Reading \code{/proc/stat}}{Hand calculation}
+\label{c2:ex:3}
+
+Here are two consecutive samples of \file{/proc/stat} from a target, taken with the given uptimes:
+
+\begin{console}
+sample 1, /proc/uptime says 3.90 2.52
+cpu  16 0 341 252 0 75 25 0 0 0
+ctxt 1626
+processes 63
+procs_running 1
+
+sample 2, /proc/uptime says 6.40 6.99
+cpu  19 0 383 699 0 81 27 0 0 0
+ctxt 1901
+processes 71
+procs_running 2
+\end{console}
+
+\xpart{a} How many context switches per second, over this interval?
+
+\xpart{b} How many processes were created per second?
+
+\xpart{c} The \code{cpu} line's fourth field is idle time. By how many units did it increase, and
+how many seconds is that? State the unit you used and why.
+
+\xpart{d} There are two CPUs. Over the 2.50 s interval, how much CPU time was available in total,
+and how much of it was spent idle? Does your answer to \textbf{c)} exceed the wall-clock interval,
+and if so, why is that not a mistake?
+
+\xpart{e} Which of the four numbers you have computed would be different if the kernel had been
+built with \code{CONFIG_HZ=1000} instead of 250?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{Device numbers}{Hand calculation}
+\label{c2:ex:4}
+
+From a target's \file{/proc/devices} and \file{/dev}:
+
+\begin{console}
+  1 mem
+  4 tty
+  5 /dev/tty
+ 10 misc
+204 ttyAMA
+254 gpiochip
+
+crw-rw-rw-    1 root root    1,   3 /dev/null
+crw-------    1 root root    5,   1 /dev/console
+crw-------    1 root root  254,   0 /dev/gpiochip0
+crw-rw-rw-    1 root root    1,   5 /dev/zero
+\end{console}
+
+\xpart{a} \file{/dev/null} and \file{/dev/zero} have the same major and different minors. What does
+that tell you, and what does it not?
+
+\xpart{b} Which driver handles \file{/dev/console}?
+
+\xpart{c} You run \code{mknod /dev/spare c 204 64}. Does the command succeed? Does opening the node
+succeed? Are those the same question?
+
+\xpart{d} You run \code{mknod /dev/bogus c 42 0}. Same two questions.
+
+\xpart{e} A colleague deletes \file{/dev/null} and says the null device is gone. What is actually
+gone, and what is not?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{Which file answers the question}{Design}
+\label{c2:ex:5}
+
+For each question, name the single file under \file{/proc} or \file{/sys} that answers it, and say
+why the obvious alternative is worse.
+
+\xpart{a} Which preemption model was this kernel built with?
+
+\xpart{b} How many CPUs does this machine have?
+
+\xpart{c} What did the bootloader pass to the kernel?
+
+\xpart{d} How many times has the timer interrupt fired on CPU 1?
+
+\xpart{e} Which physical addresses has a driver claimed?
+
+\xpart{f} What is the name of the program running as PID 1?
+
+\xpart{g} Which files does process 56 currently have open?
+
+% ------------------------------------------------------------------------------------------
+\exercise{The machine report}{Code}
+\label{c2:ex:6}
+
+Write \file{lectures/L02/lab/machine-report.sh}, a POSIX shell script that runs on the target and
+prints one \code{key: value} line per fact, in any order. It is checked by the shipped
+\file{lectures/L02/lab/run.sh}, so the key names are a contract.
+
+\begin{narrowtable}{@{}ll@{}}
+  \thead{Key} & \thead{Value} \\
+  \midrule
+  \code{kernel} & The kernel version alone, for example \code{6.12.30} \\
+  \code{cpus} & The number of CPUs \\
+  \code{memtotal-kb} & Total memory in kB, as an integer \\
+  \code{uptime-s} & Seconds since boot \\
+  \code{cmdline} & The kernel command line, verbatim \\
+  \code{init} & The name of the program running as PID 1 \\
+  \code{chardev-majors} & How many \textbf{character device} majors are claimed \\
+  \code{ctxt-per-s} & Context switches \textbf{per second}, measured \\
+\end{narrowtable}
+
+\noindent Rules, all of which the test enforces:
+\begin{itemize}
+  \item \textbf{Every key appears exactly once.} A report with a key twice is a report whose reader
+    gets whichever line comes first.
+  \item \textbf{\code{kernel} is the version alone}, not the whole of \file{/proc/version}.
+  \item \textbf{\code{chardev-majors} counts character devices only.} \file{/proc/devices} has two
+    sections and counting both is the plausible wrong answer.
+  \item \textbf{\code{ctxt-per-s} is a rate, not a counter.} \file{/proc/stat}'s \code{ctxt} is a
+    total since boot; nothing in \file{/proc} gives you a rate, so you must sample twice and divide
+    by the time that actually elapsed rather than by the time you asked for.
+  \item Use only what is on the target. In particular there is no \code{vmstat} and no
+    \code{strace}. \code{awk} can do arithmetic.
+\end{itemize}
+
+\checkyourself \code{make build L=L02} does nothing for this lab, since there is no module. Run
+\code{make test L=L02}; before you have written the script it reports \code{SKIPPED}, and afterwards
+it should report \code{PASSED} with eighteen checks.
+
+% ------------------------------------------------------------------------------------------
+\exercise{PID 1 is not an ordinary process}{Code}
+\label{c2:ex:7}
+
+Two short experiments on the target. Predict the outcome of each \textbf{before} running it, and
+write your prediction down.
+
+\xpart{a} Run \code{kill -9 1}. What did you predict, what happened, and what does that tell you
+about the protection PID 1 has?
+
+\xpart{b} Now the other half. You cannot easily make the real init exit, so reason it out instead:
+\file{tools/target/init} ends with either \code{exec /bin/sh} or \code{poweroff -f}. What would
+happen if you deleted that last line and the script simply ran off the end? Name the exact kernel
+message.
+
+\xpart{c} A daemon's parent exits while the daemon is still running. What is the daemon's
+\code{PPID} afterwards, and who is now responsible for calling \code{wait()} on it?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{What a two-megabyte userland costs you}{Design}
+\label{c2:ex:8}
+
+\xpart{a} On the target, find the size of \file{/bin/busybox} and the number of applets it provides.
+Then work out the average bytes per command, and say why that number is misleading.
+
+\xpart{b} Check whether each of \code{strace}, \code{ss}, \code{vmstat}, \code{lsof} and
+\code{journalctl} is present. For each absent one, say which of two reasons applies: \emph{no
+BusyBox applet exists}, or \emph{the subsystem it belongs to is not on this system}.
+
+\xpart{c} You need to find out which files a stuck process has open, on a target with no \code{lsof}
+at all. What do you do instead?
+
+\xpart{d} Name a class of bug that only appears on the target and never on your development machine,
+and give the concrete example this course has already hit.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent]{A rate measured three ways}{Cross-check}
+\label{c2:ex:9}
+
+The signature exercise. You will compute a number by hand, have your script compute it, and then run
+the script repeatedly, and the three will not agree. The disagreement is the exercise.
+
+\xpart{a} \textbf{By hand.} On the target, run this twice with a pause you time yourself, using a
+watch or a phone rather than the machine:
+
+\begin{shell}
+cat /proc/uptime; awk '/^ctxt/ { print $2 }' /proc/stat
+\end{shell}
+
+\noindent Compute context switches per second from your two readings. Write the number down.
+
+\xpart{b} \textbf{By script.} Run your \file{machine-report.sh} from Exercise~\ref{c2:ex:6} and
+record its \code{ctxt-per-s}.
+
+\xpart{c} \textbf{Three more times.} Run the script three times in a row and record all three
+values.
+
+\xpart{d} \textbf{Reconcile.} Answer each of these:
+\begin{itemize}
+  \item By how much do your three script runs differ from each other, as a percentage of the
+    largest? Is \code{ctxt-per-s} a property of the machine, or a property of the moment you
+    measured it?
+  \item Your script prints a value with a decimal point. How many of those digits are meaningful?
+    What would be an honest way to present this number?
+  \item Compare the hand figure to the script figure. Your hand interval was several seconds and the
+    script's was about one. Which would you expect to be steadier, and did that hold?
+  \item Now remove the \code{sleep} from your script so the two samples are taken back to back, and
+    run it again. The measured interval is roughly 0.14 s. What does the rate do, and why is a short
+    interval worse rather than better, given that it is closer to ``now''?
+\end{itemize}
+
+\xpart{e} You would like to check your answer against \code{vmstat}, which reports exactly this
+number. Try it. Then say what happened, what it tells you about this target, and how you would check
+the answer without it.
+
+\xpart{f} A colleague reads your report, sees \code{ctxt-per-s: 73.3}, and puts it in a datasheet as
+the machine's context-switch rate. Give two separate reasons that is wrong.

@@ -1,0 +1,49 @@
+% Chapter 8, typeset from lectures/L08: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{Interrupts and Deferred Work}
+\label{c8:ch}
+
+{\large\itshape The half of the mechanism the hardware drives: a line goes high, and whatever was
+running stops.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item The path from a wire going high to your function being called, and the three numbers along
+    it.
+  \item \file{/proc/interrupts}, and what each column is actually counting.
+  \item \code{request_irq}, the handler signature, and \code{IRQ_HANDLED} against \code{IRQ_NONE}.
+  \item Level and edge triggering, and an acknowledge that has to happen in the right order.
+  \item What a handler may not do, and what happens when it does it anyway.
+  \item Four places to put the work that does not belong in the handler.
+  \item Threaded handlers, and why they are the default answer now.
+  \item Take \code{qa-dev}'s interrupt, acknowledge it correctly, and move the work out.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is about the half of a driver the hardware drives: a device raises a line, and whatever
+the CPU was doing stops while your function runs. It follows an interrupt from the device's wire to
+your handler, through the three numbers it has on the way and the tool that prints each, and shows
+what \file{/proc/interrupts} is counting. It explains \code{request_irq} and what a handler owes the
+system: \code{IRQ_NONE} when the interrupt is not its own, and an acknowledgement of a
+level-triggered device in the right order, without which the machine never runs anything else
+again. It derives what a handler may not do from one fact, that it runs on time borrowed from
+whatever it interrupted, and then gives the four places to put the work that does not belong in it,
+and the reason the threaded handler is the default answer now.
+
+Read \secref{c8:app:a} first; it is the interrupt path and the rules for the handler.
+\Secref{c8:app:b} is deferred work in its four forms, with the course's measurement of a threaded
+handler against a hard one. The lab is specified by Exercises~\ref{c8:ex:6} and~\ref{c8:ex:7}: a
+module that finds \code{qa-dev}'s interrupt in the device tree, takes it, acknowledges it, and moves
+the drain into a threaded handler, checked on the target by \file{lectures/L08/lab/run.sh}. The
+exercises in \secref{c8:sec:exercises} end with the Cross-check: predict how many interrupts
+\code{qa-dev} raises in two seconds from \code{PERIOD_NS}, read the delta out of
+\file{/proc/interrupts}, and account for the shortfall. Your first explanation will be partly right,
+and the exercise is about finding out which part. The lab is done when \code{make test L=L08}
+reports \textbf{PASSED}.
+
+\input{chapters/08/interrupts}
+\input{chapters/08/deferred_work}
+\input{chapters/08/summary}
+\input{chapters/08/exercises}

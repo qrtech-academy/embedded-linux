@@ -1,0 +1,359 @@
+% Solutions to the Chapter 8 exercises that are not code, from lectures/L08/appendix/c_exercises.md.
+% Exercises 8.6 and 8.7 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 8: Interrupts and Deferred Work}
+\label{sol:sec:c8}
+Answers to the exercises in \secref{c8:sec:exercises}. Exercises~\ref{c8:ex:6} and~\ref{c8:ex:7}
+are Code, and are checked on the target as their Check yourself lines say.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c8:ex:1}{The three numbers}{Recall}
+
+\xpart{a} The property has three cells. \code{0} says the interrupt is an SPI, a shared peripheral
+interrupt; \code{112} is its number among the SPIs; \code{4} is the trigger. On a real board whoever
+wrote the device tree copied 112 out of the SoC's manual. Here QEMU writes it: it places
+\code{qa-dev} on the virt machine's platform bus, whose interrupts start at SPI 112, and generates
+the node with the number it assigned. \textbf{144} is the same interrupt as the GIC numbers it, the
+identity the controller signals to the CPU, and the hardware column of \file{/proc/interrupts}.
+\textbf{17} is the Linux IRQ number, handed out when the GIC's IRQ domain mapped hardware interrupt
+144 for the driver: an index into the kernel's own table, derived from neither of the others
+(\secref{c8:app:a1}).
+
+\xpart{b} Where the SPIs begin in the GIC's own numbering. Interrupts 0 to 15 are SGIs, the
+software-generated interrupts CPUs send one another, and 16 to 31 are PPIs, private to each CPU,
+the per-CPU timer among them. The device tree counts within the SPIs and the GIC counts all of
+them, so the GIC driver adds 32 when it translates an SPI's cell, and 16 for a PPI's
+(\file{drivers/irqchip/irq-gic.c}).
+
+\xpart{c} \textbf{The Linux number.} It is handed out in the order mappings are created, so an
+extra device whose interrupt is mapped earlier in the boot takes a number and moves everything
+after it. The DT cell and the GIC number describe the wiring, which an extra device does not
+change. One qualification for this machine: QEMU hands out the platform bus's interrupts to dynamic
+devices in the order they are created, first free first, so an extra device of that kind created
+before \code{qa-dev} on the command line would move 112 and 144 as well.
+
+\xpart{d} Two mistakes. 112 is the device tree's number and appears nowhere in
+\file{/proc/interrupts}, which shows the Linux number, 17, first and the GIC's, 144, in its hardware
+column; the thing to grep for is the name passed to \code{request_irq}, \code{qa_irq}. And a
+missing line does not mean a missing driver: a line appears only while a handler is registered for
+the interrupt, so a loaded module that has not requested it, or has already freed it, is absent
+too. Whether the module is loaded is a question for \code{lsmod}.
+
+\xpart{e} \code{4} is \code{IRQ_TYPE_LEVEL_HIGH}: level-sensitive, active high, so the interrupt is
+pending for as long as the line is high. \code{1} would have been \code{IRQ_TYPE_EDGE_RISING}: the
+controller notices the low-to-high transition and nothing else. For a GIC SPI these are the only
+two allowed. Configured as an edge, \code{qa-dev}, which holds its line high until its status is
+cleared, would lose any event that arrived while the line was still high, because no new edge
+happens (\secref{c8:app:a4}).
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c8:ex:2}{Reading \code{/proc/interrupts}}{Recall}
+
+\xpart{a} \code{17}, the Linux IRQ number. \code{1789}, how many times this interrupt was taken on
+CPU0, and \code{0}, on CPU1. \code{GIC-0}, the interrupt controller, the first GIC. \code{144}, the
+hardware number, the GIC's own. \code{Level}, the trigger type. \code{qa_irq}, the name passed to
+\code{request_irq}; there is one per registered handler, separated by commas on a shared line
+(\secref{c8:app:a2}).
+
+\xpart{b} \textbf{Nothing is wrong.} The GIC delivers an SPI to one CPU at a time, and Linux points
+it at the first online CPU in the interrupt's affinity mask. The mask allows both CPUs by default,
+so CPU0 gets every one, and nothing on this minimal target, no \code{irqbalance}, ever moves it.
+\textbf{Or something has taken CPU1 out of it}: the mask was narrowed to CPU0, by hand or with the
+\code{irqaffinity=} boot parameter, or CPU1 is not taking interrupts at all. To tell them apart,
+read \file{/proc/irq/17/smp_affinity_list}, which CPUs are allowed, and
+\file{/proc/irq/17/effective_affinity_list}, where the interrupt actually goes: \code{0-1} and
+\code{0} is the first explanation. CPU1's column for the other interrupts, the timer and the IPIs,
+shows whether it takes interrupts at all. Then write \code{1} to \file{smp_affinity_list} and watch
+CPU1's count for interrupt 17 start to climb.
+
+\xpart{c} Ruled out: anything in your handler, which is not running, and a missing
+acknowledgement, which would make the count race rather than stand still. Still possible:
+everything between the device and the CPU. The driver asked for the wrong interrupt, from the wrong
+node or the wrong index in it; the trigger type is wrong; the line is masked in the controller; or
+the device is not asserting at all, because \code{ENABLE} or \code{IRQ_EN} is not set, or because
+\code{PERIOD_NS} is below \code{QA_DEV_MIN_PERIOD_NS}, 1,000 ns, at which the device refuses to
+start. And a count that stands still need not be zero: it may be left over from an earlier load.
+
+\xpart{d} The source of the interrupt is never cleared. On a level-triggered line the handler
+returns, the line is still asserted, and the handler is entered again at once, as fast as the CPU
+can take it: the missing acknowledgement of \secref{c8:app:a6}. On \code{qa-dev} that is a handler
+that neither writes \code{IRQ_STATUS} nor empties the FIFO.
+
+\xpart{e} No. The counts belong to the interrupt descriptor, not to your registration, and
+\code{free_irq} does not reset them: the run in \secref{c8:app:a2} read 919 after the first load
+and 993 immediately after the second. So any rate has to be a difference between two readings,
+divided by the time measured between them; a single reading counts everything since the descriptor
+was created, across every load.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c8:ex:3}{The acknowledgement}{Hand calculation}
+
+\xpart{a} Every 1 written clears its bit, so \code{SAMPLE} is cleared, which was wanted. The
+\code{OVERRUN} that arrived a microsecond after your read is cleared too, and the same write resets
+the sticky \code{OVERRUN} in \code{STATUS}: the device dropped a sample and nothing in the driver
+will ever know. The other thirty bits do not exist, and the ones written to them do nothing.
+
+\xpart{b} \code{SAMPLE} is cleared exactly as before. The late \code{OVERRUN} is not: its bit was 0
+in the value written, and writing 0 leaves a bit alone. So it stays set, the line stays asserted,
+since the device raises it while either bit is set, and the handler is entered again at once,
+reads \code{0b10}, and deals with the overrun. Nothing is lost.
+
+\xpart{c} With a bit that only the write clears:
+\begin{enumerate}
+  \item The handler reads \code{0b01}.
+  \item It writes \code{0b01} back. The bit clears and the line drops.
+  \item A new sample arrives: it is queued, its bit is set again, and the line rises.
+  \item The handler drains the FIFO, taking the new sample with the others.
+  \item It returns \code{IRQ_HANDLED}, with the bit still set and the FIFO empty.
+  \item The line is still asserted, so the handler runs again: it reads \code{0b01}, acknowledges,
+    finds nothing to drain, and returns.
+\end{enumerate}
+One interrupt with nothing to do, and \textbf{no data lost}: the sample was taken in step 4. On
+\code{qa-dev} itself even that interrupt does not happen. The read that empties the FIFO clears
+\code{SAMPLE} (part \textbf{f)}), so step 5 returns with the bit clear and the line low, and the
+controller counts a level-triggered interrupt as pending only while its line is high, so the rise
+in step 3 leaves nothing behind.
+
+\xpart{d}
+\begin{enumerate}
+  \item The handler reads \code{0b01}.
+  \item It drains the FIFO.
+  \item A new sample arrives after the last read of the FIFO: it is queued, its bit is set, and the
+    line rises.
+  \item The handler writes the \code{0b01} it read in step 1, which clears the bit the new sample
+    set, and the line drops.
+  \item It returns \code{IRQ_HANDLED}, and nothing is pending.
+\end{enumerate}
+The sample is in the FIFO and nothing will interrupt for it. It is collected only when some later
+event sets the bit again: on \code{qa-dev}, the next sample, one period late; on a device whose
+events are sporadic, whenever the next one comes, if one does.
+
+\xpart{e} \textbf{c) is survivable and d) is not.} c) costs work: one extra entry to the handler
+that finds nothing, which is visible, limits itself, and loses no sample. d) destroys information:
+the only notice of an event is cleared, its data waits on some unrelated later event, and nothing
+anywhere reports it. That is why \secref{c8:app:a5} acknowledges exactly what it read, and does it
+before the drain.
+
+\xpart{f} \textbf{Empty the FIFO.} Reading \code{QA_DEV_SAMPLE} pops one sample, and the pop that
+takes the level to zero clears \code{IRQ_SAMPLE} and lowers the line, without the driver writing
+\code{IRQ_STATUS} at all. To find it, search \file{tools/qa-dev/qa-dev.c} for every assignment to
+\code{irq_status}. It is set in \code{qa_dev_timer_expired}; cleared by a write to
+\code{IRQ_STATUS} in \code{qa_dev_write}; zeroed by \code{CTRL_RESET}, which throws the samples
+away with it; and cleared in \code{qa_dev_fifo_pop} when \code{fifo_level} reaches zero, which is
+the answer. It covers \code{SAMPLE} only: \code{OVERRUN} is cleared by a write to
+\code{IRQ_STATUS}, or a reset, and by nothing else.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c8:ex:4}{An interrupt budget}{Hand calculation}
+
+\xpart{a} One every 250 us is $1{,}000{,}000 / 250 = 4{,}000$ interrupts a second. At 8 us each,
+$4{,}000 \times 8 = 32{,}000$ us, 32 ms of every second: \textbf{3.2\%} of one CPU.
+
+\xpart{b} The rate is unchanged, 4,000 a second, and $4{,}000 \times 40 = 160{,}000$ us, 160 ms of
+every second: \textbf{16\%}.
+
+\xpart{c} \textbf{250 us}, where $4{,}000 \times 250$ us is the whole second. In practice sooner,
+because taking and leaving an interrupt costs time the handler's own figure leaves out, and nothing
+else runs on that CPU meanwhile. Past 250 us the handler cannot finish one interrupt before the next
+is due, and the backlog grows until the device's FIFO overflows.
+
+\xpart{d} Sixteen samples at one per 250 us fill the FIFO in $16 \times 250 = 4{,}000$ us:
+\textbf{4 ms}. Counting from the last drain, the worst case has the first new sample arrive at once,
+the sixteenth fill the FIFO 3.75 ms later, and the seventeenth, at 4 ms, dropped. On this course's
+kernel that is exactly one jiffy.
+
+\xpart{e} The hard handler is now 10 us: $4{,}000 \times 10 = 40$ ms a second, \textbf{4\%} of a
+CPU with interrupts disabled. The threaded half is $4{,}000 \times 30 = 120$ ms a second, 12\%, in a
+thread the scheduler can place, preempt and prioritise. What does not change is the rate, 4,000 a
+second; the point at which the CPU saturates, because each interrupt still costs 40 us of a 250 us
+period; and the 4 ms of part \textbf{d)}, which belongs to the device's FIFO and rate, although if
+the thread does the draining it is now the thread's scheduling delay that must stay under it.
+\textbf{The system's total work does not fall.} It rises a little: still 40 us an interrupt, 16\% of
+a CPU, plus waking the thread and switching to it and back, on every interrupt. What moved is who
+waits: 12\% of a CPU went from time nothing can preempt to time the scheduler decides about
+(\secref{c8:app:b6}).
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c8:ex:5}{Where does the work go}{Design}
+
+\xpart{a} \textbf{Hard handler.} It is a couple of register accesses, only the handler can do it,
+and until it is done the line stays asserted.
+
+\xpart{b} \textbf{Threaded handler}, with \code{IRQF_ONESHOT} so that the line stays masked while it
+runs. 4 KB through a register is 1,024 reads of 32 bits, long enough to matter (\secref{c8:app:b5}),
+and a FIFO that deep is itself the buffer that lets the copy wait for the thread. The case for the
+hard handler is the one in \secref{c8:app:b1}, work that would be lost if it waited, and it has to
+show that the thread's scheduling delay could outlast the FIFO.
+
+\xpart{c} \textbf{Whichever half puts the data in the buffer, straight after putting it there.}
+\code{wake_up_interruptible} does not sleep and is safe in a hard handler (\secref{c9:app:a4}), so
+in the lab's design, where the hard handler drains, the hard handler. Waking before the data is
+there wakes a reader to an empty buffer.
+
+\xpart{d} \textbf{Threaded handler}, or a workqueue if the allocation is not tied to one interrupt:
+\code{GFP_KERNEL} may sleep while the kernel reclaims memory. Better still, allocate in advance.
+
+\xpart{e} \textbf{Workqueue}, as delayed work queued 10 ms ahead. The retry is not one per
+interrupt, and a threaded handler that slept for 10 ms would keep the line masked, and the next
+interrupt waiting, for all of it.
+
+\xpart{f} \textbf{Hard handler}: an \code{atomic_inc}, or an increment under the lock the handler
+already holds, costs nanoseconds.
+
+\xpart{g} \textbf{Threaded handler.} \code{dev_err} is legal in a hard handler, because
+\code{printk} never sleeps, but it is not cheap: the message may be written out to a serial console
+before the call returns, at 115,200 baud about 87 us a character. A hard handler that can log on
+every interrupt should at least use \code{dev_err_ratelimited}.
+
+\xpart{h} \textbf{d)} and \textbf{e)}. Both reach \code{schedule()} from a context that has no
+task of its own to put to sleep. A \code{GFP_KERNEL} allocation is marked as a place that may
+sleep, and under memory pressure it does, entering reclaim; \code{msleep} always does. In a hard
+handler the scheduler finds itself called with interrupts disabled in the middle of an interrupt,
+reports \code{BUG: scheduling while atomic}, and the machine is left with an interrupt that never
+completes. The allocation is the worse of the two, because it sleeps only when memory is short, so
+the bug waits for a machine under load.
+
+\xpart{i} \code{CONFIG_DEBUG_ATOMIC_SLEEP}, which \file{kernel/qa.config} enables. It makes every
+call that may sleep check its context, and prints \code{BUG: sleeping function called from invalid
+context} with a backtrace at the call, every time, including the allocations that would not have
+slept that time.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c8:ex:8}{The interrupt that never stops}{Design}
+
+\xpart{a} \code{insmod} never returns. The storm starts inside the module's init, the moment it
+sets \code{IRQ_EN}, on CPU0, where the interrupt is routed, and the task that was interrupted there,
+\code{insmod} in the course's run, never runs again. The console says nothing for over twenty
+seconds; in the course's run the first line after the module's own two was the RCU stall report, at
+29.8 s of uptime (\secref{c8:app:a6}). The wait is the stall detector's timeout,
+\code{CONFIG_RCU_CPU_STALL_TIMEOUT=21} on this kernel, counted from the start of the grace period
+that CPU0 is holding up.
+
+\xpart{b} \code{rcu: INFO: rcu_preempt detected stalls on CPUs/tasks:}, then \code{0-....: (0 ticks
+this GP)} and \code{Sending NMI from CPU 1 to CPUs 0:}. A grace period ends only when every CPU has
+passed through a quiescent state: a context switch, the idle loop, or user mode. CPU0 is in hard
+interrupt context, re-entering the handler for ever, and passes through none of them; ``0 ticks
+this GP'' says it has not even taken a timer tick. After 21 seconds RCU reports the CPU that is
+holding it up, and CPU1, which is still running, asks CPU0 for a backtrace, which is what would name
+the handler. RCU is not the cause but the first victim with a timeout; this kernel builds neither
+the soft- nor the hard-lockup detector, which would otherwise have spoken first.
+
+\xpart{c} \textbf{TIMEOUT.} \file{ci/test.sh} kills QEMU after 120 seconds and reports ``L08:
+TIMEOUT'' with the path to the serial log. A failure means the script ran to the end, printed
+\code{QA-TEST-END} with its status, and some checks failed. Here \file{run.sh} never got past
+\code{insmod}: there is no status, and nothing is known about any check after it. Calling that a
+failure would claim the checks ran; the distinction sends you to the serial log, where the evidence
+is, rather than to a list of check results that does not exist.
+
+\xpart{d} \code{grep qa_irq /proc/interrupts}, twice, a second apart, on CPU1, the CPU still
+running. It would show interrupt 17's count on CPU0 growing by far more than the thousand a second
+the period allows, while CPU1's stays at 0: the racing count of \secref{c8:app:a2}, and the
+diagnosis in one line.
+
+\xpart{e} \textbf{No.} An edge-triggered line interrupts on a transition, not a level. \code{qa-dev}
+raises its line and holds it until the bit is cleared, so with nothing clearing it there is one
+rising edge, one interrupt, and then silence: the line stays high and no new edge ever comes. The
+machine is fine and the device looks dead. The FIFO fills in sixteen periods, \code{OVERRUN} sets,
+and every later sample is dropped, silently.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c8:ex:9}{Interrupts counted two ways}{Cross-check}
+
+\xpart{a} $2\text{ s} / 1\text{ ms} = \mathbf{2{,}000}$.
+
+\xpart{c}
+\begin{itemize}
+  \item \textbf{A delta}, because the count belongs to the descriptor and survives \code{free_irq}:
+    across a reload it carried on from 919 to 993 (\secref{c8:app:a2}). A single reading counts
+    everything since boot, and has no interval to divide by.
+  \item \textbf{Using the measured time makes the shortfall larger, not smaller.} Take the course's
+    hard-handler run, 1,789 interrupts in 2.11 s (\secref{c8:app:b4}). Against 2.00 s the ideal is
+    2,000 and the shortfall $211/2{,}000 = 10.6\%$; against 2.11 s the ideal is 2,110 and the
+    shortfall $321/2{,}110 = 15.2\%$. It moves up by 4.7 points, because the interval was longer
+    than two seconds, so more interrupts were due.
+  \item The hypothesis is yours to write down, and part \textbf{d)} is where it meets the source.
+\end{itemize}
+
+\xpart{d}
+\begin{itemize}
+  \item \textbf{Relative.} The line is \code{timer_mod(s->timer,
+    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->period_ns)}, run from the timer's own callback after
+    the sample is queued: the next expiry is ``now plus a period'', where now is when QEMU got round
+    to running the callback, not the moment it was due.
+  \item So each interval is the period plus the callback's lateness, plus the few microseconds the
+    callback spends before it reads the clock again. Every late callback pushes all the later ones
+    back, so lateness accumulates rather than averaging out. Note what is not in it: your driver.
+    The device re-arms inside its own callback, whether or not the handler has run.
+  \item A shortfall $s$ against a period $P$ means each interval is $P/(1-s)$, so the missing term is
+    $o = P\,s/(1-s)$. At 15\% and 1,000 us that is $1{,}000 \times 0.15/0.85 = 176$ us; the run above,
+    at 15.2\%, gives 179 us, and the Cross-check's own 1 ms row, at 17.6\%, gives 213 us. A couple
+    of hundred microseconds is plausible for an emulator whose timers are serviced by threads on a
+    busy host, and would be absurd for a hardware timer. Nothing inside the guest can confirm it.
+\end{itemize}
+
+\xpart{e}
+\begin{itemize}
+  \item \textbf{The implied overhead would be the same in every row}, and the shortfall would fall
+    as the period grows, as $o/(P+o)$. With the 1 ms row's 213 us: at 10 ms, $213/10{,}213 = 2.1\%$,
+    about 206 interrupts in 2.1 s, where 190 were measured; at 0.1 ms, $213/313 = 68\%$, about 6,700
+    in 2.1 s, where 13,085 were measured. Too few at the slow end, twice too many at the fast end.
+  \item \file{/proc/uptime} is the guest kernel's clock, counted from the generic timer that QEMU
+    emulates from the same virtual clock the device's timer runs on. So it contains the kernel,
+    whose \code{sleep 2} overran to about 2.1 s, and QEMU. It does not contain your driver, which
+    decides neither when interrupts are raised nor how time is kept.
+  \item A candidate, not a finding. At 10 ms the guest's CPUs are idle almost all the time and
+    QEMU's threads sleep in the host, so each timer waits on a host wake-up, whose lateness is up to
+    the host's scheduler. At 0.1 ms the guest is busy, QEMU is awake, and an expired timer is
+    noticed sooner. The table's pattern, 947 us of lateness at 10 ms and 63 us at 0.1 ms, fits
+    that, and does not prove it.
+  \item One to run: read the device's timestamp registers, \code{QA_DEV_TS_LO} and \code{TS_HI}, in
+    the handler and difference successive stamps. That is the device's own interval between
+    assertions, in the emulator's clock, with the guest's handling taken out; repeat it with the
+    other CPU kept busy, and see whether the lateness at 10 ms falls. One you cannot run here: the
+    same driver on real hardware with an oscilloscope on the interrupt line, which has no emulator
+    in the measurement at all.
+\end{itemize}
+
+\xpart{f}
+\begin{itemize}
+  \item The line is a level. Once \code{SAMPLE} is set it stays high until the handler clears it,
+    and a sample that arrives while it is already high changes nothing on the line, so no second
+    interrupt is raised; the sample joins the FIFO, and the handler's drain takes everything that
+    has accumulated. At 0.1 ms, whenever the time from assertion to drain exceeds 100 us, a second
+    sample is waiting: $14{,}389 - 13{,}708 = 681$ extra samples, 1.05 per interrupt.
+  \item At 1 ms the handler always drains well inside a period, so every assertion finds exactly
+    one sample. The period changed against the time from assertion to drain; the driver did not.
+  \item \code{OVERRUN}: bit 1 of \code{IRQ_STATUS}, and the sticky bit 3 of \code{STATUS}. The
+    device sets it when a sample arrives to find the FIFO full, which would take sixteen undrained
+    samples, 1.6 ms without service at this period. In the course's run it did not happen: the
+    interrupts coalesced and no data was lost (\secref{c8:app:b6}). To check a run of your own,
+    record the bit in the handler, or run the device in counter mode, where sample $n$ is $n$, and
+    look for a gap: a dropped sample still advances the device's count.
+\end{itemize}
+
+\xpart{g} Wrong: \textbf{``dropping''}, when nothing is dropped: the device raises fewer interrupts,
+because each interval is the period plus the emulator's lateness, and every interrupt it raises is
+serviced. \textbf{``15\%''}, when the shortfall depends on the period, 8.7\%, 17.6\% and 38.6\% at
+10, 1 and 0.1 ms, and even two runs at 1 ms differ, 15.2\% and 17.6\%. \textbf{``the driver is
+broken''}, when the driver's two counters agree with the device and the cause is in the device
+model's re-arm and the emulator. Supported by the course's measurements: ``At \code{PERIOD_NS} =
+1,000,000, \code{qa-dev} raised 1,789 interrupts in 2.11 s of guest uptime, 15.2\% fewer than the
+2,110 the period implies, and the driver serviced every one of them, one sample each. The device
+re-arms its timer from when its callback ran, so each interval is the period plus the emulator's
+lateness, about 180 us here, and that lateness is not constant across periods.'' Still unknown: why
+the lateness depends on the period; how much of it is QEMU, the host, or the guest's load; whether
+real hardware shows any of it; and anything about latency at all, since every figure here is a count
+or an average.
+
+\xpart{h} Not a number from any of this: counts say how many interrupts were raised, not how long
+any of them waited. What belongs on a datasheet is a distribution of the interval from the line's
+assertion to the handler, over many thousands of interrupts, with its mean, high percentiles and
+the worst value observed, and the conditions beside it: kernel version and configuration
+(6.12.30, \code{PREEMPT}, \code{HZ=250}), hard or threaded handler, interrupt rate, system load,
+number of samples and duration, and the platform, which here is an emulator. Refuse to claim a
+guaranteed worst case, any number for real hardware, and anything inferred from counts or averages.
+The register is \code{QA_DEV_TS_LO}/\code{TS_HI}, which records the instant the device asserted
+its line, in the emulator's clock that the guest's own clock also runs on. Latency is the interval
+from that instant to the handler, and software can read when its handler ran but not when the line
+went up; on real hardware only an instrument on the wire sees that. The register hands software the
+start of the interval, so it can subtract instead of infer.

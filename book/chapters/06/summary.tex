@@ -1,0 +1,58 @@
+% Section 6.3, from lectures/L06/README.md: what you should be able to do afterwards, the
+% questions to test yourself, and the next lecture.
+
+\section{Review}
+\label{c6:sec:review}
+
+\needspace{6\baselineskip}
+\subsection*{What you should be able to do now}
+After this chapter, you should be able to:
+\begin{itemize}
+  \item Tell a physical address from a virtual one in unfamiliar driver code, from the types alone.
+  \item Choose an allocator from the size and the contiguity requirement, and say what it fails
+    like.
+  \item Choose a GFP flag from the context you are in, and say what \code{GFP_ATOMIC} costs you.
+  \item Say what \code{request_mem_region} prevents and what it does not.
+  \item Map a device's registers and read them without the compiler reordering or eliding the
+    access.
+  \item Explain what \code{__iomem} is for, given that it compiles to nothing.
+  \item Say when \code{writel_relaxed} is safe and when it is not.
+  \item Say what \code{devm_*} buys, what it is attached to, and why a bare module cannot use it.
+  \item Say why a \code{vmalloc} buffer cannot be handed to a device, and which two calls give you
+    one that can.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Questions to test yourself}
+\begin{enumerate}
+  \item A device tree node says \code{reg = <0x0 0x1000>} and its parent's \code{ranges} is
+    \code{<0x0 0x0 0xC000000 0x2000000>}. What physical address do the registers start at?
+  \item You \code{ioremap} a region and read the ID register; it returns \code{0xFFFFFFFF}. Name
+    three different causes, and say how you would tell them apart.
+  \item Why can \code{kmalloc(GFP_KERNEL)} not be called from an interrupt handler?
+  \item What does \code{__iomem} do at run time?
+  \item Your driver fills a descriptor in memory and then tells the device to fetch it with
+    \code{writel_relaxed}. It works on one machine and not another. What is the likely cause?
+  \item \code{devm_kzalloc} memory is freed when? Name the exact event, and say what has to exist
+    before you can call it at all.
+  \item You map a buffer with \code{dma_map_single(..., DMA_FROM_DEVICE)} and read it before
+    unmapping. On your desk it works every time. What have you actually done, and where does it stop
+    working?
+\end{enumerate}
+
+\needspace{6\baselineskip}
+\subsection*{Where to look}
+\begin{itemize}
+  \item \Secref{c1:app:a8} is where the device tree node was first shown, with the numbers you now
+    have to translate.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Looking ahead}
+Chapter~\ref{c7:ch} is about:
+\begin{itemize}
+  \item Every way two pieces of kernel code can run at once, which is more ways than you expect.
+  \item Why the ring buffer you wrote in Chapter~\ref{c5:ch} is already broken.
+  \item Spinlocks and mutexes, and the question that chooses between them.
+  \item A deadlock you build on purpose, and the tool that reports it.
+\end{itemize}

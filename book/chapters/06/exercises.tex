@@ -1,0 +1,269 @@
+% Section 6.4, from lectures/L06/appendix/c_exercises.md.
+
+\section{Exercises}
+\label{c6:sec:exercises}\label{c6:app:c}
+
+\begin{aside}
+Ten, ending with the Cross-check. Do them in order; Exercise~\ref{c6:ex:7} onwards need the target
+running.
+
+Where an exercise can be checked mechanically, a \textbf{Check yourself} line says how.
+
+\textbf{One warning before you start.} Exercise~\ref{c6:ex:9} asks you to point a driver at
+addresses that are not the device. One of them will oops the machine. That is intended, it is
+survivable here, and \S\ref{c6:app:b6} says what to expect. Do not run that exercise against
+anything you cannot reboot in two seconds.
+
+\textbf{Solutions.} The exercises that are not Code are answered in \secref{sol:sec:c6}. The Code
+exercises have no solution: each is checked by running it, as its Check yourself line says.
+\end{aside}
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{Two kinds of address}{Recall}
+\label{c6:ex:1}
+
+\xpart{a} For each of \code{void *}, \code{phys_addr_t}, \code{void __iomem *} and \code{char __user
+*}, say whether you may dereference it, and if not, what you must use instead.
+
+\xpart{b} \code{__iomem} and \code{__user} compile to nothing. What are they for, and what tool
+makes them useful?
+
+\xpart{c} \file{/proc/iomem} lists physical ranges. Does an entry there mean the range is mapped?
+Does its absence mean the hardware is not present?
+
+\xpart{d} Your driver stores the value returned by \code{ioremap} in a \code{void *} rather than a
+\code{void __iomem *}. It compiles and works. Name what you have lost.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{The allocators}{Recall}
+\label{c6:ex:2}
+
+\xpart{a} Choose an allocator for each, and give the reason in one sentence:
+\begin{itemize}
+  \item A 48-byte per-device state structure.
+  \item A 2 MB buffer for software processing, no hardware involvement.
+  \item A 16 KB buffer a device will DMA into.
+  \item A 1 MB buffer that hardware never sees.
+\end{itemize}
+
+\xpart{b} \code{kmalloc(131072, GFP_KERNEL)} succeeds on your desk every time and fails on a
+customer's machine after three weeks of uptime. Explain, and name the file that shows you why.
+
+\xpart{c} Why can \code{kvmalloc} not be used for a DMA buffer, given that it might have returned
+\code{kmalloc} memory?
+
+\xpart{d} Which free function goes with which allocator? What happens if you mismatch them?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{GFP flags}{Hand calculation}
+\label{c6:ex:3}
+
+For each, say which GFP flag is correct and what goes wrong with \code{GFP_KERNEL}:
+
+\xpart{a} Allocating a bounce buffer inside \code{read()}.
+
+\xpart{b} Allocating inside an interrupt handler.
+
+\xpart{c} Allocating while holding a spinlock.
+
+\xpart{d} Allocating in a module's init function.
+
+Then:
+
+\xpart{e} \code{GFP_ATOMIC} is described in some places as ``high priority''. In what sense is that
+backwards? Which of the two is \emph{more} likely to return NULL, and why?
+
+\xpart{f} A driver uses \code{GFP_KERNEL} inside a spinlock and has run in production for two years.
+Is it correct? What would make the problem appear, and which config option this course enables would
+have reported it on the first run?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{Translating a device tree address}{Hand calculation}
+\label{c6:ex:4}
+
+A device tree contains:
+
+\begin{console}
+/ {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        bus@40000000 {
+                #address-cells = <1>;
+                #size-cells = <1>;
+                ranges = <0x0 0x0 0x40000000 0x1000000>;
+
+                widget@2000 {
+                        reg = <0x2000 0x100>;
+                };
+        };
+};
+\end{console}
+
+\xpart{a} What physical address do \code{widget}'s registers start at, and how many bytes long are
+they?
+
+\xpart{b} How many 32-bit cells does \code{widget}'s \code{reg} property occupy, and how do you
+know?
+
+\xpart{c} How many cells does the \code{ranges} property occupy? Account for each one.
+
+\xpart{d} A colleague reads \code{reg = <0x2000 0x100>} and maps \code{0x2000}. What do they map,
+and what will they most likely see when they read it?
+
+\xpart{e} The bus node's \code{ranges} is \code{<0x0 0x0 0x40000000 0x1000000>}. Rewrite it as a
+sentence.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{Ordering}{Design}
+\label{c6:ex:5}
+
+\xpart{a} Your driver writes \code{CTRL} to start a conversion and immediately reads \code{STATUS}
+to see whether it finished. Which accessors do you use, and what happens if you use \code{_relaxed}
+for both?
+
+\xpart{b} Your driver writes sixteen configuration registers and then a single \code{GO} bit. Where
+does a barrier actually need to be, and what does that buy over using ordered accessors throughout?
+
+\xpart{c} Why is a missing barrier one of the worst classes of bug to diagnose? Answer in terms of
+what you observe rather than what is happening.
+
+\xpart{d} \code{qa-dev} rejects byte accesses to its 32-bit registers rather than widening them.
+Argue for that decision from the point of view of somebody writing a driver for real silicon.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{Coherent or streaming}{Design}
+\label{c6:ex:6}
+
+None of this runs on \code{qa-dev}, which has no DMA engine. Argue it on paper from
+\S\ref{c6:app:a6}.
+
+For each buffer, say whether you would reach for \code{dma_alloc_coherent} or for
+\code{dma_map_single}, and give the reason in terms of how often each side touches it:
+
+\xpart{a} A sixteen-entry descriptor ring. The driver writes an entry, the device reads it, the
+device writes a status word back, and this happens thousands of times a second.
+
+\xpart{b} A 64 KB block of samples that the device fills once and the driver then hands to
+userspace.
+
+\xpart{c} A four-byte doorbell the driver writes and the device polls.
+
+\xpart{d} Your driver maps a buffer \code{DMA_FROM_DEVICE}, and while the transfer is running it
+reads the first word ``just to see whether data has started arriving''. Nothing ever goes wrong in
+testing. What did the code do, why did testing not catch it, and on what kind of machine does it
+break?
+
+\xpart{e} A colleague proposes \code{kvmalloc(65536, GFP_KERNEL)} for the buffer in (b), reasoning
+that 64 KB is large enough to risk \code{kmalloc} failing on a fragmented system. They are right
+about the fragmentation. Why is the suggestion still wrong, and what does the kernel do about it?
+
+% ------------------------------------------------------------------------------------------
+\exercise{Map the device}{Code}
+\label{c6:ex:7}
+
+Write \file{lectures/L06/lab/qa_mmio.c}. It must:
+\begin{itemize}
+  \item Take an unsigned long module parameter \code{base}, the physical address of the registers,
+    readable through sysfs and with no default that works. \textbf{Refuse to load if it was not
+    given}, with \code{-EINVAL} and a message saying so, rather than mapping address 0.
+  \item Claim the region with \code{request_mem_region}, naming it after the module.
+  \item Map it with \code{ioremap}.
+  \item Read \code{QA_DEV_ID} and \code{QA_DEV_VERSION} and print them as \code{id=0x\%08x
+    version=0x\%04x}.
+  \item \textbf{Refuse to continue if the identity register is wrong}, with \code{-ENODEV}.
+  \item Write \code{0xDEADBEEF} to \code{QA_DEV_SCRATCH}, read it back, and print \code{scratch ok
+    (0x...)} if it matches.
+  \item Unwind correctly from every failure point, and release everything on unload.
+\end{itemize}
+The register offsets are in \file{lectures/L06/lab/qa-dev.h}, which is a copy of the device's own
+register map, printed in \secref{c6:app:b}; read it as you would a datasheet.
+
+\checkyourself \code{make test L=L06} reports \textbf{PASSED}, with nine checks. It works the
+address out of the device tree itself and passes it to your module, so if your arithmetic in
+Exercise~\ref{c6:ex:10} disagrees with the harness, one of you is wrong and it is worth finding out
+which.
+
+% ------------------------------------------------------------------------------------------
+\exercise{Prove the mapping, three ways}{Code}
+\label{c6:ex:8}
+
+Reading a correct constant is weaker evidence than it looks. With your module loaded:
+
+\xpart{a} Find your region in \file{/proc/iomem}. What name does it appear under, and where did that
+name come from?
+
+\xpart{b} \code{QA_DEV_ID} reads \code{0x51414456}. Decode those four bytes as ASCII. Why is an
+identity register conventionally something you can recognise by eye?
+
+\xpart{c} Reading a constant correctly does not prove the mapping is writable, or that it is not
+aliased onto something else. Which part of your module tests that, and what exactly would fail if
+\code{ioremap} had returned a read-only mapping?
+
+\xpart{d} Unload and reload the module without rebooting. Then comment out \code{release_mem_region}
+in your exit path, rebuild, and try again. What does the second \code{insmod} say, and why is that
+error message a good one?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{What a wrong address does}{Design}
+\label{c6:ex:9}
+
+\textbf{Read the warning at the top of this section first.}
+
+\xpart{a} Load your module with \code{base=0xC} instead of the correct address. What does it read,
+and what does your identity check do about it? What would a driver \emph{without} that check have
+done next?
+
+\xpart{b} Now load it with \code{base=0xC001000}, one page past the device. Record what happens: the
+message, what happened to \code{insmod}, and whether the module can afterwards be used or removed.
+
+\xpart{c} You now have two different failure modes from two wrong addresses. State the general
+lesson about using ``it did not crash'' as evidence that a mapping is correct.
+
+\xpart{d} Both experiments cost you a reboot at most. Write two sentences on what the same two
+experiments would cost on a board on your bench and on a product in the field, and relate that to
+Chapter~\ref{c1:ch}'s argument about what this course gives up by having no hardware.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent]{An address worked out by hand}{Cross-check}
+\label{c6:ex:10}
+
+The signature exercise: derive a physical address on paper, predict what is at it, then look.
+
+\xpart{a} \textbf{Read the node.} On the target, find the device tree node and print its \code{reg},
+and its parent's \code{ranges}, as raw bytes:
+
+\begin{shell}
+dt=/sys/firmware/devicetree/base
+node=$(find $dt -name 'qa-dev@*' -type d | head -1)
+od -An -tx1 -v "$node/reg"
+od -An -tx1 -v "$(dirname "$node")/ranges"
+\end{shell}
+
+\noindent Write out the cells by hand, four bytes each, most significant byte first.
+
+\xpart{b} \textbf{Translate.} From those cells alone, compute the physical address of the registers
+and the size of the window. Show the arithmetic; it is one addition, and the point is knowing which
+two numbers to add.
+
+\xpart{c} \textbf{Predict.} From \file{lectures/L06/lab/qa-dev.h}, say what you expect to read at
+offset 0 and at offset 4, as 32-bit values, before you run anything.
+
+\xpart{d} \textbf{Measure.} Load your module with the address you computed and read the two values
+off \code{dmesg}.
+
+\xpart{e} \textbf{Reconcile.} Answer each:
+\begin{itemize}
+  \item Did your address match what the harness computed? If not, which of you translated wrongly,
+    and what does \file{run.sh} do that you did not?
+  \item Now do part \textbf{a)} again with \code{od -An -tx4} instead of \code{-tx1}. You get
+    different numbers. Which is right, what is \code{-tx4} doing, and why is the wrong answer
+    \emph{plausible} rather than obviously broken?
+  \item Compare \code{reg}'s first cell against the address you ended up using. They differ by a
+    large constant. Where did that constant come from, and which node declares it?
+  \item You now know the address. Nothing in your driver's source contains it. Where is it, and what
+    has to happen for a driver to stop being told and start finding out? Name the chapter.
+\end{itemize}
+
+\xpart{f} Suppose the device tree said \code{reg = <0x1000 0x1000>} instead. Recompute the address,
+and say what you would now expect \code{QA_DEV_ID} to read and why.

@@ -1,0 +1,55 @@
+% Section 4.2, from lectures/L04/README.md: what you should be able to do afterwards, the
+% questions to test yourself, and the next lecture.
+
+\section{Review}
+\label{c4:sec:review}
+
+\needspace{6\baselineskip}
+\subsection*{What you should be able to do now}
+After this chapter, you should be able to:
+\begin{itemize}
+  \item Write, build and load an out-of-tree module, and say what each of the four macros in it is
+    for.
+  \item Explain why \code{module_init} returning is not the module finishing.
+  \item Say what \code{insmod} does that \code{modprobe} does not, and produce the failure that
+    distinguishes them.
+  \item Add a module parameter and read it back from sysfs without writing any sysfs code.
+  \item Predict whether a given module will load, from its \code{MODULE_LICENSE} and the symbols it
+    uses.
+  \item Choose a \code{printk} level, and say why \code{pr_debug} is not simply \code{pr_info} you
+    comment out.
+  \item List three things you may not do in kernel C that you do without thinking in userspace C.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Questions to test yourself}
+\begin{enumerate}
+  \item What is resident in memory after \code{module_init} returns, and what is running?
+  \item Why is a \code{.ko} built against one kernel usually refused by another?
+  \item A proprietary module using a GPL-only symbol can fail at two different points, with two very
+    different messages. Name both, and say which one you get when the symbol changed from
+    \code{EXPORT_SYMBOL} to \code{EXPORT_SYMBOL_GPL} after your module was built.
+  \item You add \code{module_param(depth, int, 0644)}. Who wrote the code that makes
+    \file{/sys/module/yours/parameters/depth} appear?
+  \item Why is there no \code{float} in the kernel? What would have to happen for there to be one?
+  \item \code{rmmod} refuses with ``Module is in use''. What is holding it, and where can you see
+    that?
+\end{enumerate}
+
+\needspace{6\baselineskip}
+\subsection*{Where to look}
+\begin{itemize}
+  \item \file{lectures/L04/lab/Kbuild} is one line and eighteen lines of comment explaining it: why
+    it builds every \code{.c} in the directory rather than a fixed list, and what goes wrong with
+    each half of the line if you write it the obvious way.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Looking ahead}
+Chapter~\ref{c5:ch} is about:
+\begin{itemize}
+  \item The oldest interface a driver can offer userspace, and the one you will write first.
+  \item \code{open}, \code{read}, \code{write}, and what each of them has to return.
+  \item Why dereferencing a pointer from userspace is a bug and not merely bad style.
+  \item A ring buffer, and a KUnit suite that knows one thing your \code{read()} does not.
+\end{itemize}

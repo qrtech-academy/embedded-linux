@@ -1,0 +1,61 @@
+% Section 12.3, from lectures/L12/README.md: what you should be able to do afterwards, the
+% questions to test yourself, and the next lecture.
+
+\section{Review}
+\label{c12:sec:review}
+
+\needspace{6\baselineskip}
+\subsection*{What you should be able to do now}
+After this chapter, you should be able to:
+\begin{itemize}
+  \item Define a real-time system without using the word ``fast'', and say why an average is not
+    evidence.
+  \item Name three sources of latency and say, for a given piece of code, which one it contributes
+    to.
+  \item Explain priority inversion, and say what priority inheritance does about it.
+  \item Choose a preemption model for a stated requirement and defend it.
+  \item Say what \code{PREEMPT_RT} does to a \code{spinlock_t} and to an interrupt handler.
+  \item Say why \code{raw_spinlock_t} exists and when using one is a mistake.
+  \item Find, in unfamiliar driver code, the four habits that make it hostile to real time.
+  \item Run \code{cyclictest}, read its output, and state precisely what it did and did not measure.
+  \item Present a latency measurement together with the conditions that make it meaningful.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Questions to test yourself}
+\begin{enumerate}
+  \item System A responds in 50 us on average and 30 ms at worst. System B responds in 5 ms every
+    time. Which is real time, and for what requirement?
+  \item Your handler takes a \code{spinlock_t} and does 200 us of work. What changes under
+    \code{PREEMPT_RT}, and is the change an improvement?
+  \item Why can \code{PREEMPT_RT} not simply make every lock a sleeping lock?
+  \item \code{cyclictest} reports a maximum of 40 us. What does that tell you about your device's
+    interrupt latency?
+  \item A colleague reports ``we measured 12 us latency''. What four questions do you ask before
+    believing it applies to your product?
+  \item Why is a \code{udelay(50)} in a driver a real-time problem even though 50 us is short?
+  \item You measure lower latency under QEMU than the datasheet claims for real silicon. What
+    happened?
+\end{enumerate}
+
+\needspace{6\baselineskip}
+\subsection*{Where to look}
+\begin{itemize}
+  \item \file{tools/qa-dev/qa-dev.c} shows exactly when the timestamp is taken, which is the one
+    thing you must be sure of before trusting a latency measurement built on it.
+\end{itemize}
+
+\needspace{6\baselineskip}
+\subsection*{Looking ahead}
+This is the last chapter, and with it the book's main text is complete. It ends with a driver that
+probes off a device tree, services interrupts, blocks a reader correctly, registers with two
+subsystems, and whose latency you have measured and can describe honestly. What remains is to work
+the exercises in \secref{c12:sec:exercises} and check the ones that are not code against the
+solutions in Appendix~\ref{sol:ch:solutions}. After that, the two written papers in
+Appendices~\ref{exam:ch:about} to \ref{ansb:ch:answers} are there to test, on paper and with nothing
+in front of you, how much of all twelve chapters you can reconstruct on your own.
+
+What to do next, in rough order of usefulness: read a real driver in \file{drivers/} for a device
+you own and see how much of it you now recognise; write a driver for hardware that exists; and send
+a patch, because the review you get on a first patch to a subsystem mailing list is worth more than
+any course.

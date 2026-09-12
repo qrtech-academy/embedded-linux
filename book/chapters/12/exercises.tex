@@ -1,0 +1,245 @@
+% Section 12.4, from lectures/L12/appendix/c_exercises.md.
+
+\section{Exercises}
+\label{c12:sec:exercises}\label{c12:app:c}
+
+\begin{aside}
+Nine, ending with the Cross-check that closes the course. Do them in order; Exercise~\ref{c12:ex:6}
+onwards need both kernels built, which is \code{make kernel} and \code{make kernel RT=1}, and the
+second kernel's initramfs, which is \code{make rootfs RT=1}.
+
+Where an exercise can be checked mechanically, a \textbf{Check yourself} line says how.
+
+\textbf{Solutions.} The exercises that are not Code are answered in \secref{sol:sec:c12}. The Code
+exercises have no solution: each is checked by running it, as its Check yourself line says.
+\end{aside}
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{What real time claims}{Recall}
+\label{c12:ex:1}
+
+\xpart{a} Define a real-time system without using the word ``fast''.
+
+\xpart{b} System A responds in 50 us on average and 30 ms at worst. System B responds in 5 ms every
+time, never more than 5.1 ms. Which is real time? Answer for a 6 ms deadline and for a 1 ms
+deadline.
+
+\xpart{c} A colleague reports that a change ``improved latency by 30\%''. What is the single
+question that determines whether that is good news?
+
+\xpart{d} Distinguish hard from soft real time, and say which Linux with \code{PREEMPT_RT} honestly
+is.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent2]{The three sources}{Recall}
+\label{c12:ex:2}
+
+\xpart{a} Name the three sources of latency from \secref{c12:app:a2}.
+
+\xpart{b} For each of these, say which source it contributes to:
+\begin{itemize}
+  \item A \code{spin_lock_irqsave} critical section that copies 4 KB.
+  \item A \code{udelay(200)} in a probe function.
+  \item A low-priority task holding a mutex a high-priority task needs.
+  \item A hard interrupt handler that takes 300 us.
+\end{itemize}
+
+\xpart{c} Two of the three are somebody's code and one is structural. Which is which, and what
+mechanism addresses the structural one?
+
+\xpart{d} Tell the Mars Pathfinder story in four sentences, naming the three priorities involved.
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent3]{A latency budget}{Hand calculation}
+\label{c12:ex:3}
+
+A motor controller must react to an encoder interrupt within \textbf{500 us}, every time. Measured
+on the target hardware:
+
+\begin{console}
+interrupt to hard handler        max  40 us
+hard handler duration            max  15 us
+hard handler to threaded handler max 120 us
+threaded handler duration        max  60 us
+threaded handler to userspace    max 200 us
+\end{console}
+
+\xpart{a} What is the worst-case interrupt-to-userspace latency? Does it meet the deadline?
+
+\xpart{b} The work is moved entirely into the hard handler, removing the two thread transitions.
+Recompute. Does it now meet the deadline, and what have you done to every other device on the
+system?
+
+\xpart{c} A driver elsewhere holds a \code{spinlock_t} for 300 us. Add it to your budget for both
+\textbf{a)} and \textbf{b)}. Which arrangement survives?
+
+\xpart{d} Under \code{PREEMPT_RT} that 300 us spinlock section becomes preemptible. Recompute
+\textbf{a)}. What happened, and what has it cost you?
+
+\xpart{e} The requirement is restated as ``500 us, 99.9\% of the time''. What changes about which
+numbers you need, and is that easier or harder to demonstrate?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{Reading your own driver for hostility}{Design}
+\label{c12:ex:4}
+
+Open the driver you wrote in Chapter~\ref{c11:ch} and find:
+
+\xpart{a} Every place it disables interrupts, and for how long.
+
+\xpart{b} Every place it holds a lock across something that is not a handful of register accesses.
+
+\xpart{c} Every busy-wait.
+
+\xpart{d} Every assumption that it stays on one CPU.
+
+For each one you find, say what it would cost under \code{PREEMPT_RT} and what the fix would be. If
+you find none of some category, say how you established that.
+
+\xpart{e} Which of the four habits from \S\ref{c12:app:a6} is the hardest to spot by reading, and
+what would you use to find it instead?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{Priorities}{Design}
+\label{c12:ex:5}
+
+\xpart{a} You set your measurement program to \code{SCHED_FIFO} priority 80. Name two things that
+can now still preempt it.
+
+\xpart{b} A \code{SCHED_FIFO} task enters an infinite loop on a single-CPU machine. What happens,
+and what saves you?
+
+\xpart{c} \code{sched_rt_runtime_us} is 950000 out of 1000000. State what that means in one
+sentence, and describe the symptom of hitting it.
+
+\xpart{d} Turning the throttle off is possible. When would you, and what do you owe the next person
+to work on the system?
+
+\xpart{e} \code{SCHED_DEADLINE} refuses a request that \code{SCHED_FIFO} would have accepted. What
+did it do that \code{SCHED_FIFO} does not, and why is a refusal more useful than a missed deadline?
+
+% ------------------------------------------------------------------------------------------
+\exercise{Measure by subtraction}{Code}
+\label{c12:ex:6}
+
+Write \file{lectures/L12/lab/qa_latency.c}, a platform driver that turns the work of
+Chapters~\ref{c9:ch} and~\ref{c11:ch} into a measurement instrument.
+\begin{itemize}
+  \item In the interrupt handler, \textbf{first} take \code{ktime_get_ns()}, then read \code{TS_LO}
+    and \code{TS_HI} to get the instant the device asserted its line. Reading \code{TS_LO} latches
+    the pair.
+  \item Store both, plus a sequence number and a count of records dropped, in a ring of 512
+    \code{struct qa_latency_record} (declared in \file{lectures/L12/lab/qa_latency.h} and printed
+    in \secref{c12:app:b3}).
+  \item Present \file{/dev/qa_latency}, whose \code{read} blocks until records are available and
+    returns as many whole records as fit, with \code{O_NONBLOCK} and \code{poll} support as in
+    Chapter~\ref{c9:ch}.
+  \item Count records dropped when the ring is full rather than overwriting.
+  \item Use \code{devm_} for everything the driver core has a helper for, and
+    \code{devm_add_action_or_reset} for the character device, which has none.
+\end{itemize}
+
+\checkyourself \code{make test L=L12} reports \textbf{PASSED}, with ten checks, and \code{RT=1 make
+test L=L12} does too after \code{make rootfs RT=1} and \code{RT=1 make build L=L12}.
+
+\xpart{a} Why must \code{ktime_get_ns()} be the first statement rather than coming after the
+register reads? Estimate what you would be adding to every measurement if it came second.
+
+\xpart{b} You forget to rebuild between kernels and \code{insmod} says \code{invalid module format}.
+Which chapter explained that, and what exactly disagreed?
+
+\xpart{c} The driver drops records under load rather than overwriting the oldest. Argue for that
+choice, then argue against it.
+
+% ------------------------------------------------------------------------------------------
+\exercise{Measure from userspace}{Code}
+\label{c12:ex:7}
+
+The measurement program \code{qa_latency_test} ships with the course. Read it before running it.
+
+\xpart{a} It computes two intervals. Name them, and say which is absolute and which is only a
+spread. Why the difference?
+
+\xpart{b} It takes \code{clock_gettime} once per batch of records rather than once per record. Why
+can it not do better, and what does a large batch tell you about the reader?
+
+\xpart{c} It discards the first few reads. What would they have measured otherwise?
+
+\xpart{d} The histogram buckets are logarithmic. Take the idle \code{PREEMPT} histogram from
+\S\ref{c12:app:b4} and redraw the top three rows as linear 1 us buckets. How many rows would the
+full histogram need?
+
+\xpart{e} Run it and read your own histogram. What fraction of samples is under 512 us, and what is
+the worst case? Which of those two would you put in a datasheet, and which describes the system?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent4]{What cyclictest is for}{Design}
+\label{c12:ex:8}
+
+\xpart{a} Describe in two sentences what \code{cyclictest} measures.
+
+\xpart{b} Your \code{cyclictest} maximum is 45 us and your device's data still arrives late. Explain
+how both can be true.
+
+\xpart{c} Name the part of the path in \S\ref{c12:app:b1} that \code{cyclictest} covers, and the
+parts it does not.
+
+\xpart{d} \code{qa-dev} has a timestamp register. Real hardware almost never does. Given that, how
+do people actually measure interrupt latency on real boards? Name two techniques.
+
+\xpart{e} Why did this course build a device with that register rather than using a real one?
+
+% ------------------------------------------------------------------------------------------
+\exercise[fillaccent]{The trade, measured}{Cross-check}
+\label{c12:ex:9}
+
+The last Cross-check. Predict which kernel wins, measure both, and discover that the answer depends
+entirely on which number you look at.
+
+\xpart{a} \textbf{Predict.} Before measuring anything, write down whether you expect
+\code{PREEMPT_RT} to produce a \textbf{lower mean} and a \textbf{lower maximum} than \code{PREEMPT},
+for the handler-to-userspace latency the lab reports. Commit to both answers separately.
+
+\xpart{b} \textbf{Measure, four ways.} Build and boot both kernels, remembering to rebuild the
+module for each:
+
+\begin{shell}
+make kernel      && make build L=L12      && make test L=L12
+make kernel RT=1 && make rootfs RT=1
+RT=1 make build L=L12 && RT=1 make test L=L12
+\end{shell}
+
+\noindent Record the mean and the maximum for each kernel, idle and under load: eight numbers.
+
+\xpart{c} \textbf{Reconcile.} Answer each:
+\begin{itemize}
+  \item Which of your two predictions was right, and which was wrong?
+  \item The mean is \textbf{worse} under \code{PREEMPT_RT} and the maximum is \textbf{better}.
+    Explain both, in terms of what \S\ref{c12:app:a5} says changes.
+  \item If a colleague measured only the mean, what would they conclude, and would they be wrong?
+  \item State, in one sentence, why ``worse average, better worst case'' is the definition of the
+    trade rather than a disappointing result.
+\end{itemize}
+
+\xpart{d} \textbf{Repeat it.} Run the \textbf{same} idle measurement on the \textbf{same} kernel
+three more times and record the maximum each time. Compare the spread between runs against the
+difference you measured between the two kernels in \textbf{b)}.
+\begin{itemize}
+  \item Is your kernel-to-kernel difference larger than your run-to-run variation?
+  \item If it is not, what have you actually established?
+  \item How many runs would you need before you would defend the comparison in a design review?
+\end{itemize}
+
+\xpart{e} \textbf{The part that matters most.} Everything you have measured was taken inside an
+emulator. Write a paragraph, not a sentence, answering: \textbf{what is this measurement blind to?}
+Cover at minimum which components other than the guest kernel are inside your numbers, why the
+absolute values cannot transfer to real silicon, and what specifically survives the comparison and
+what does not.
+
+\xpart{f} You are asked for one number for a datasheet: ``interrupt-to-userspace latency''. Write
+the entry exactly as you would submit it, including every condition. Then write the sentence you
+would add to say what it does not cover.
+
+\xpart{g} Finally: your driver now probes off a device tree, services interrupts, blocks readers
+correctly, registers with two subsystems, and has had its latency characterised. Name the one thing
+you would still not deploy it without, and say which chapter told you why.

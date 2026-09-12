@@ -1,0 +1,267 @@
+% Section 6.2, from lectures/L06/appendix/b_mmio_and_resources.md.
+
+\section{MMIO and Resource Management}
+\label{c6:app:b}
+
+How a driver reaches its hardware: finding the address, claiming it, mapping it, and reading it
+without the compiler or the processor helpfully rearranging what you asked for.
+
+Every listing here was produced on this course's target, against the \code{qa-dev} device. Its
+register map is \file{tools/qa-dev/qa-dev.h}, and that header is the only place the map exists: the
+QEMU device model includes it, and so does every driver from here on, through a copy in its lab
+directory. Read it as you would a datasheet. Here it is, typeset straight from the repository:
+
+\cfile{tools/qa-dev/qa-dev.h}
+
+\subsection{Where the address comes from}
+\label{c6:app:b1}
+
+On an embedded system, nothing discovers it. Somebody wrote it down, and in a device tree that
+somebody is the board's author. \code{qa-dev}'s node, as QEMU generated it:
+
+\begin{console}
+platform-bus@c000000 {
+        ranges = <0x00 0x00 0xc000000 0x2000000>;
+        #address-cells = <0x01>;
+        #size-cells = <0x01>;
+
+        qa-dev@0 {
+                compatible = "qacademy,qa-dev-1.0";
+                reg = <0x00 0x1000>;
+                interrupts = <0x00 0x70 0x04>;
+        };
+};
+\end{console}
+
+\noindent \textbf{\code{reg = <0x00 0x1000>} does not say the device is at address zero.} It says
+the device begins at offset 0 \emph{on its parent bus}, and is 0x1000 bytes long. To get a physical
+address you translate through the parent's \code{ranges}, which reads: child 0x0 maps to parent
+0xC000000, for 0x2000000 bytes. So:
+
+\[
+  \texttt{0x0} + \texttt{0xC000000} = \textbf{\texttt{0xC000000}}
+\]
+
+\noindent A reader who takes \code{reg} at face value maps address 0 and reads nothing useful. That
+translation is the Cross-check, and Chapter~\ref{c10:ch} is where \code{platform_get_resource} does
+it for you.
+
+\textbf{The cells are 32-bit big-endian}, whatever the machine's own endianness. On the target the
+properties are raw bytes:
+
+\begin{shell}
+od -An -tx1 -v /sys/firmware/devicetree/base/platform-bus@c000000/qa-dev@0/reg
+\end{shell}
+
+\noindent Reading them with \code{od -tx4} is the obvious shortcut and is wrong: it decodes four
+bytes as a \emph{native-endian} integer, so on this little-endian target every cell comes back
+byte-swapped and \code{0x0C000000} reads as \code{0x0000000C}. That number is plausible enough to
+act on, which is what makes it worth knowing. The lab's \file{run.sh} reassembles bytes by hand for
+exactly this reason.
+
+\lecturefigure{lectures/L06/appendix/images/address_translation.png}
+  {Four boxes in a row showing one address being translated: reg holding 0x00 and 0x1000, ranges
+   mapping child 0x0 to 0x0C000000, ioremap taking that physical address, and readl returning
+   0x51414456. Below, a note that a wrong mapping fails two ways and only one of them is loud.}
+  {fig:address_translation}
+
+\subsection{Claiming the region}
+\label{c6:app:b2}
+
+\begin{ccode}
+region = request_mem_region(base, QA_DEV_MMIO_SIZE, "qa_mmio");
+if (!region)
+        return -EBUSY;
+\end{ccode}
+
+\noindent \textbf{This maps nothing and prevents nothing.} It is an entry in a registry. What it
+buys you is that a \emph{second} driver calling it for an overlapping range gets NULL, so two
+drivers cannot both believe they own the same device and work intermittently.
+
+It is bookkeeping that the hardware knows nothing about. A driver that skips it and calls
+\code{ioremap} directly works fine, right up until the day a second driver does the same.
+
+The registry is visible, and this is the payoff for Exercise~\ref{c1:ex:7}, which looked for
+\code{qa-dev} in \file{/proc/iomem} and found nothing:
+
+\begin{console}
+# grep qa_mmio /proc/iomem
+0c000000-0c000fff : qa_mmio
+\end{console}
+
+\noindent The name in that listing is the string you passed, so make it the driver's name and not
+something generic. Release with \code{release_mem_region(base, size)}; failing to means the next
+\code{insmod} gets \code{-EBUSY} from your own previous load, which is a confusing way to discover a
+leak.
+
+\subsection{Mapping it}
+\label{c6:app:b3}
+
+\begin{ccode}
+regs = ioremap(base, QA_DEV_MMIO_SIZE);
+if (!regs)
+        return -ENOMEM;
+\end{ccode}
+
+\noindent \code{ioremap} creates a kernel virtual mapping for a physical range and returns
+\code{void __iomem *}.
+
+\textbf{It is not memory, and the distinction is not pedantry.} Four things are true of device
+registers and false of memory:
+\begin{itemize}
+  \item \textbf{Reads have side effects.} Reading \code{QA_DEV_SAMPLE} removes a sample from the
+    FIFO. Reading it twice is not the same as reading it once.
+  \item \textbf{Writes may not be merged or reordered.} Two writes to the same register are two
+    operations.
+  \item \textbf{It must not be cached.} \code{ioremap} maps it uncached; a cached mapping would let
+    the processor satisfy a read from a stale line and postpone a write indefinitely.
+  \item \textbf{There is no storage.} Nothing was allocated. \code{iounmap} returns the mapping, not
+    any memory.
+\end{itemize}
+Which is why the compiler must not be trusted with it. Given an ordinary pointer, a compiler may
+eliminate a read whose value you ignore, merge two writes, or hoist a read out of a loop. All three
+are correct for memory and all three break a driver.
+
+\subsection{\code{readl} and \code{writel}}
+\label{c6:app:b4}
+
+\begin{ccode}
+u32 id = readl(regs + QA_DEV_ID);
+writel(0xdeadbeef, regs + QA_DEV_SCRATCH);
+\end{ccode}
+
+\noindent These are the only legal way to touch an \code{__iomem} pointer. They compile to a single
+load or store plus the barriers the architecture needs, and they are not optimised away.
+
+\begin{narrowtable}{@{}ll@{}}
+  \thead{Accessor} & \thead{Width} \\
+  \midrule
+  \code{readb}/\code{writeb} & 8 bits \\
+  \code{readw}/\code{writew} & 16 bits \\
+  \code{readl}/\code{writel} & 32 bits \\
+  \code{readq}/\code{writeq} & 64 bits \\
+\end{narrowtable}
+
+\noindent \textbf{Use the width the device documents.} \code{qa-dev} accepts 32-bit accesses only
+and rejects anything else rather than quietly widening it, which is deliberate: a driver that gets
+away with a byte write to a word register here would not get away with it on real hardware.
+
+The address arithmetic is plain byte arithmetic on the returned pointer, so \code{regs + QA_DEV_ID}
+with the offsets from the register map is exactly right, and casting to a struct of \code{u32}
+fields is a common alternative that works until a register map has a gap in it.
+
+\subsection{Ordering, and the \code{_relaxed} variants}
+\label{c6:app:b5}
+
+\code{writel} carries a barrier; \code{writel_relaxed} does not. What the barrier orders is the part
+worth getting right.
+
+Accesses from one CPU to one device's registers, through a mapping \code{ioremap} made, arrive at
+the device in program order either way. Write a control register and then read the status
+register, relaxed or not, and the device sees the write first. What the barrier orders is a register
+access against \emph{ordinary memory}: \code{writel} waits for every earlier store to RAM before its
+own store, and \code{readl} completes before any later load from RAM begins. That matters the moment
+the device reads memory itself. Fill a descriptor in RAM, then write the register that tells the
+device to fetch it:
+
+\begin{ccode}
+desc->len = len;                          /* ordinary memory */
+writel(DOORBELL_GO, regs + DOORBELL);     /* ordered after it */
+\end{ccode}
+
+\noindent Without the barrier the processor may let the register write overtake the store to the
+descriptor, and the device fetches a descriptor from before your own update. \code{qa-dev} reads no
+memory, so every access this course's labs make is to one device, and the difference never shows
+on this target.
+
+The relaxed forms exist because barriers cost time, and a driver writing a burst of
+registers where only the last one matters can use \code{_relaxed} for the burst and an ordered
+access at the end. \textbf{Use the ordered forms until you have measured a reason not to.} A missing
+barrier produces a driver that works on one machine and fails on another, which is the single worst
+class of bug to debug.
+
+This is the same memory ordering that is a property of the processor on its own; here there is
+hardware on the other end that also has an opinion.
+
+\subsection{What a wrong address does}
+\label{c6:app:b6}
+
+Worth knowing before you guess one, and the answer is not ``you read a wrong number''.
+
+\textbf{A wrong-but-mapped address reads plausibly.} Pointing the lab's module at \code{0xC} rather
+than \code{0xC000000} produces:
+
+\begin{console}
+qa_mmio: id=0x00000000 version=0x0000
+\end{console}
+
+\noindent No error, no fault, just zeros. A driver that did not check its identity register would
+carry on and misbehave later.
+
+\textbf{A wrong-and-unmapped address aborts the machine.} Pointing it one page past the device, at
+\code{0xC001000}, produces this:
+
+\begin{console}
+Internal error: synchronous external abort: 0000000096000010 [#1] PREEMPT SMP
+Modules linked in: qa_mmio(O+)
+CPU: 0 UID: 0 PID: 67 Comm: insmod Tainted: G           O       6.12.30
+pc : qa_mmio_init+0x98/0xff8 [qa_mmio]
+Call trace:
+ qa_mmio_init+0x98/0xff8 [qa_mmio]
+ do_one_initcall+0x84/0x360
+\end{console}
+
+\noindent \code{insmod} is killed, the module is left half-loaded so it can be neither used nor
+removed, and the sensible next step is a reboot. On this target that costs two seconds; on a board
+on a bench it costs a walk across the room, and on a product in the field it costs a truck.
+
+Three lessons, and the third is the one worth carrying:
+\begin{itemize}
+  \item \textbf{Always check an identity register} if the device has one. \code{qa-dev} has
+    \code{QA_DEV_ID} for this, and reading \code{0x51414456} is what tells you the mapping landed
+    where you meant.
+  \item \textbf{The failure mode depends on the address}, so ``it did not crash'' is not evidence
+    that a mapping is right.
+  \item \textbf{This is what the emulator is for.} \Secref{c1:app:a4} said the course cannot teach
+    you what a bricked board feels like; the other side of that trade is that you can point a driver
+    at a wrong address here and find out what happens, which is not an experiment anyone runs twice
+    on real hardware.
+\end{itemize}
+
+\subsection{The whole sequence, and its unwind}
+\label{c6:app:b7}
+
+Acquire in order, release in reverse, and unwind only what you actually got:
+
+\begin{ccode}
+region = request_mem_region(base, QA_DEV_MMIO_SIZE, "qa_mmio");
+if (!region)
+        return -EBUSY;
+
+regs = ioremap(base, QA_DEV_MMIO_SIZE);
+if (!regs) {
+        ret = -ENOMEM;
+        goto err_region;
+}
+
+if (readl(regs + QA_DEV_ID) != QA_DEV_ID_MAGIC) {
+        ret = -ENODEV;
+        goto err_map;
+}
+return 0;
+
+err_map:
+        iounmap(regs);
+err_region:
+        release_mem_region(base, QA_DEV_MMIO_SIZE);
+        return ret;
+\end{ccode}
+
+\noindent Two acquisitions, two labels, in reverse. Add a third and you add a third label; the
+pattern does not get cleverer, it gets longer, and by the time a real driver has a clock, a
+regulator, a reset line and three mappings it is twenty lines of unwinding that must stay in step
+with the acquire path.
+
+That is the argument for \code{devm_}, which \S\ref{c6:app:a7} explains and which this chapter
+cannot use, because every \code{devm_} function needs a \code{struct device *} and a bare module
+does not have one. Chapter~\ref{c10:ch} is where one appears and this ladder is deleted.

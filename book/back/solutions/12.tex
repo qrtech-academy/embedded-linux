@@ -1,0 +1,450 @@
+% Solutions to the Chapter 12 exercises that are not code, from lectures/L12/appendix/c_exercises.md.
+% Exercises 12.6 and 12.7 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 12: Real-Time Linux}
+\label{sol:sec:c12}
+Answers to the exercises in \secref{c12:sec:exercises}. Exercises~\ref{c12:ex:6} and~\ref{c12:ex:7}
+are Code, and are checked by running them on the target.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c12:ex:1}{What real time claims}{Recall}
+
+\xpart{a} A real-time system is one whose answer is correct only if it arrives within a stated
+deadline, every time: a late answer is a wrong answer, however right its content.
+
+\xpart{b} \textbf{For 6 ms, B is real time and A is not.} B's worst observed response, 5.1 ms, is
+inside the deadline; A's is 30 ms, five times the deadline, and its 50 us average does not change
+that. \textbf{For 1 ms, neither is.} B misses every time, since it never responds in less than
+5 ms. A meets the deadline on most responses but not on all of them, and a deadline met most of the
+time is a deadline missed. Being real time is a property of a system against a deadline, not of the
+system alone.
+
+\xpart{c} ``Which number improved: the average or the worst case?'' A mean 30\% lower says nothing
+about the maximum, and a real-time requirement is a statement about the maximum
+(\secref{c12:app:a1}). The next questions are under what load and for how long
+(\secref{c12:app:b5}).
+
+\xpart{d} In \textbf{hard} real time a missed deadline is a system failure: an airbag, a motor
+commutation loop. In \textbf{soft} real time it degrades quality: audio, video. Linux with
+\code{PREEMPT_RT} is honestly good soft real time. It is used for hard real time, but only by
+people who have measured their own system very carefully, because nobody can prove a worst case
+for a kernel of that size; it can only be measured. It is not a hard real-time operating system in
+the sense that a small RTOS with a provable worst case is.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c12:ex:2}{The three sources}{Recall}
+
+\xpart{a} Interrupts disabled, preemption disabled, and priority inversion (\secref{c12:app:a2}).
+
+\xpart{b}
+\begin{itemize}
+  \item \textbf{A \code{spin_lock_irqsave} section copying 4 KB:} interrupts disabled, on that CPU,
+    for the length of the copy, with preemption disabled along with them. (On \code{PREEMPT_RT} a
+    \code{spinlock_t} taken with \code{_irqsave} does not disable interrupts at all,
+    \file{Documentation/locking/locktypes.rst}:238. It is a sleeping lock there, and the cost of
+    the section moves to whoever waits for the lock.)
+  \item \textbf{A \code{udelay(200)} in a probe function:} on this course's \code{PREEMPT} kernel,
+    none of the three by itself. \code{probe} runs in process context and is preemptible, so a
+    higher-priority task simply preempts it, and the 200 us is lost only to the probe. It becomes
+    preemption-disabled time on a \code{PREEMPT_NONE} or \code{PREEMPT_VOLUNTARY} kernel, where
+    there is no preemption point inside it, or on any kernel if a spinlock is held around it, and
+    interrupts-disabled time under \code{spin_lock_irqsave}. That is why busy-waiting is a habit of
+    its own in \secref{c12:app:a6}: what it costs depends on the context around it.
+  \item \textbf{A low-priority task holding a mutex a high-priority task needs:} priority inversion,
+    as soon as a medium-priority task keeps the holder off the CPU. Without the medium task it is
+    ordinary blocking, bounded by the holder's critical section.
+  \item \textbf{A hard interrupt handler that takes 300 us:} interrupts disabled. A hard handler runs
+    with interrupts masked on its CPU, so for 300 us no other interrupt is taken there and nothing
+    is scheduled there either.
+\end{itemize}
+
+\xpart{c} \textbf{Interrupts disabled and preemption disabled are somebody's code}: a section someone
+wrote, fixed by making it shorter. \textbf{Priority inversion is structural}: it needs no long
+section at all, only three tasks, one lock and an unlucky interleaving. The mechanism that addresses
+it is \textbf{priority inheritance}: while a low-priority task holds a lock a higher-priority task
+waits for, it runs at the waiter's priority, so no medium-priority task can preempt it
+(\secref{c12:app:a3}). In Linux that is \code{rt_mutex}, which \code{PREEMPT_RT} puts under
+\code{mutex} and \code{spinlock_t}.
+
+\xpart{d} Mars Pathfinder landed in July 1997, and a few days later began suffering total system
+resets, each of which lost data. The high-priority bus management task needed a mutex held by the
+low-priority meteorological task, and the medium-priority communications task, which needed
+neither, preempted the meteorological task and kept it from releasing the mutex. The bus management
+task therefore did not run in time, and a watchdog concluded that something had gone badly wrong
+and reset the computer. The VxWorks mutex had been created with priority inheritance switched off,
+and the fix, uploaded from Earth, switched it on.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c12:ex:3}{A latency budget}{Hand calculation}
+
+\xpart{a} Add the stages:
+\[
+  40 + 15 + 120 + 60 + 200 = 435~\text{us} \le 500~\text{us}.
+\]
+It meets the deadline, with 65 us to spare. The sum of the per-stage maxima is a safe bound on the
+chain only because each figure is a maximum; the stages' worst cases need not happen together, so
+the true end-to-end worst case is at most 435 us.
+
+\xpart{b} With the work in the hard handler, the reaction happens there, and nothing on the path
+waits for the thread or for userspace. The handler now does its own 15 us and the thread's 60 us:
+\[
+  40 + (15 + 60) = 115~\text{us}.
+\]
+It meets the deadline with 385 us to spare. What it has done to every other device: the hard
+handler now runs for 75 us with interrupts masked on its CPU, so every other interrupt routed there
+can wait up to 75 us longer, and no task of any priority runs there meanwhile. The deadline was met
+by moving 75 us into everybody else's worst case, the first of the three sources in
+\secref{c12:app:a2}. (On \code{PREEMPT_RT} the kernel would force this handler into a thread unless
+it asked for \code{IRQF_NO_THREAD}, which it would then need, and which makes the imposition
+explicit.)
+
+\xpart{c} The other driver's \code{spin_lock} disables preemption, not interrupts. It therefore
+delays the points at which a task is scheduled, the threaded handler and the reader, and not the
+hard interrupt.
+\begin{itemize}
+  \item \textbf{a)} $435 + 300 = 735$ us. It fails, by 235 us.
+  \item \textbf{b)} 115 us, unchanged: a preemption-disabled section cannot delay a hard interrupt,
+    because interrupts are still enabled. It survives.
+\end{itemize}
+\textbf{The arrangement in b) survives.} Even if the other driver had taken its lock with
+\code{spin_lock_irqsave}, b) would be $115 + 300 = 415$ us and would still survive, while a) stays
+at 735 us.
+
+\xpart{d} Back to $40 + 15 + 120 + 60 + 200 = 435$ us, meeting the deadline with 65 us to spare.
+\textbf{What happened:} the other driver's \code{spinlock_t} is an \code{rt_mutex} under
+\code{PREEMPT_RT}, so its holder is preemptible. Your threaded handler runs at \code{SCHED_FIFO}
+priority 50 by default (\code{sched_set_fifo}, \file{kernel/sched/syscalls.c}:858), preempts a
+holder that is an ordinary task, and your chain stops paying for somebody else's critical section.
+\textbf{What it has cost you:}
+\begin{itemize}
+  \item Every stage figure was measured on \code{PREEMPT} and no longer holds. Under
+    \code{PREEMPT_RT} the averages rise: in this chapter's measurement the mean rose by 23\% idle
+    and 42\% loaded (\secref{c12:app:a8}). Your own hard handler, requested without
+    \code{IRQF_NO_THREAD}, is itself forced into a thread, so the 15 us and 120 us stages change
+    shape. The 435 us means nothing until it has been measured again on the real-time kernel.
+  \item The other driver's section now takes longer in wall-clock time, because it is preempted.
+  \item If your path needs the same lock, you still wait for its holder, boosted by inheritance,
+    for up to its 300 us. If the holder is another interrupt thread at the same priority 50,
+    \code{SCHED_FIFO} does not preempt an equal, and the 300 us stays in your budget until you raise
+    your thread's priority. Priorities are now something you have to design.
+\end{itemize}
+
+\xpart{e} \textbf{Which numbers:} no longer the maximum of each stage but the distribution of the
+end-to-end latency, and in particular its 99.9th percentile, measured end to end. Percentiles do
+not add: the 99.9th percentile of a sum is not the sum of the stages' 99.9th percentiles, and can be
+larger or smaller, so a budget of per-stage figures no longer works. The requirement must also say
+what the other 0.1\% may be. At one interrupt a millisecond, one in a thousand is one late reaction
+every second, so it needs to say how late one may be and whether two may come in a row.
+
+\textbf{Easier to demonstrate}, because a percentile can be established by a finite measurement
+with a stated confidence and a maximum never can. If $n$ independent samples show no miss, the
+miss rate is below 0.1\% with 95\% confidence once $(1 - 0.001)^n \le 0.05$, which is
+$n \ge \ln 0.05 / \ln 0.999 \approx 2{,}995$: about three thousand samples, and more for every miss
+you do see. Latency spikes are not independent, since one blocking event delays a run of consecutive
+interrupts, so in practice you need many times that, under the product's load. It is still a
+question a measurement can answer. Whether the requirement is maximum or percentile, nothing can
+be demonstrated from per-stage figures alone.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c12:ex:4}{Reading your own driver for hostility}{Design}
+
+The answer below is for a driver written to the specifications of Exercises~\ref{c8:ex:6},
+\ref{c9:ex:6}, \ref{c10:ex:6} and~\ref{c11:ex:6}. Its handler is registered with
+\code{devm_request_irq} and no flags. It reads \code{IRQ_STATUS}, drains the device's FIFO, keeps
+the latest sample in an \code{atomic_t} for \code{read_raw}, and acknowledges. It also has a
+\code{gpio_chip} over \code{GPIO_OUT} and \code{GPIO_IN}. Yours may differ, and the method is the
+point.
+
+\xpart{a} \textbf{The hard handler, for its whole length.} It runs with interrupts masked on its
+CPU while it reads \code{IRQ_STATUS}, drains up to \code{QA_DEV_FIFO_DEPTH}, 16 samples, one MMIO
+read each, and writes the acknowledgement: bounded by about twenty register accesses, each a trap
+into QEMU's device model on this target. \textbf{Any \code{spin_lock_irqsave} in process context.}
+Chapter~\ref{c9:ch}'s \code{read} took the FIFO lock that way (\secref{c8:app:a8}).
+Chapter~\ref{c11:ch} deleted \code{read}, so with \code{read_raw} using \code{atomic_read} as \secref{c11:app:a4}'s does,
+none remains, unless your gpiochip's \code{set} does its read-modify-write of \code{GPIO_OUT} under
+\code{spin_lock_irqsave}, which is a few register accesses long.
+\emph{Under \code{PREEMPT_RT}:} the handler is forced into a thread, because it was requested with
+neither \code{IRQF_NO_THREAD} nor \code{IRQF_ONESHOT} (\file{kernel/irq/manage.c}:1372). It runs
+as \code{irq/N-...} with interrupts enabled, and the interrupts-off time shrinks to the kernel's
+generic primary handler. \code{spin_lock_irqsave} on a \code{spinlock_t} no longer disables
+interrupts at all. The cost is nothing and the fix is to leave it alone. What must not be added is
+\code{IRQF_NO_THREAD} to ``keep it fast''.
+
+\xpart{b} \textbf{The FIFO lock in the handler}, if it is held across the drain loop: up to 16 MMIO
+reads under a lock. Chapter~\ref{c9:ch}'s \code{read} also copied out of the driver's FIFO under
+it; that went with \code{read} in Chapter~\ref{c11:ch}, unless you kept the FIFO. The fix is to read
+the samples into a local array first and take the lock only to copy them in.
+\emph{Under \code{PREEMPT_RT}:} the lock is an \code{rt_mutex}, so the section stops being
+preemption-disabled time. Instead it is time for which a waiter of any priority can be blocked,
+bounded by inheritance, and the handler thread and a process-context holder now sleep on each other
+rather than spin. Shorten the section; do not change its type. A \code{raw_spinlock_t} here would
+put back exactly the latency \code{PREEMPT_RT} removed (\secref{c12:app:a5}).
+
+\xpart{c} \textbf{None.} Nothing in Chapters~\ref{c8:ch} to~\ref{c11:ch} asks for \code{udelay},
+\code{mdelay}, \code{ndelay} or a loop that polls a register until it changes. The drain loop is
+not a busy-wait: it reads until the FIFO is empty, and the device's depth of 16 bounds it.
+\emph{Established by} searching the source for \code{udelay}, \code{mdelay}, \code{ndelay},
+\code{cpu_relax} and the \code{readl_poll_timeout} family, and by reading every loop whose exit
+condition is a register value to check that it has a bound other than the device's cooperation. Had
+there been one, the fix is \code{usleep_range} in process context (\secref{c9:app:b3}). Under
+\code{PREEMPT_RT} a \code{udelay} in the threaded handler burns its time preemptibly, but it still
+holds up the thread and everything waiting for it.
+
+\xpart{d} \textbf{None.} The counters are \code{atomic_t} (Exercise~\ref{c8:ex:6}), the sample is an
+\code{atomic_t}, and there is no \code{DEFINE_PER_CPU}, \code{this_cpu_}, \code{smp_processor_id},
+\code{get_cpu} or \code{preempt_disable}. \emph{Established by} searching for exactly those. The
+nearest thing is the handler's plain \code{spin_lock}, which \secref{c8:app:a8} justifies by
+``interrupts are already masked there''. Under \code{PREEMPT_RT} that reason no longer holds, since
+the handler is a thread with interrupts enabled, but the code is still correct. The process-context
+side takes the same \code{spinlock_t}, both are now the same sleeping lock, and forced threading
+adds \code{IRQF_ONESHOT} (\file{kernel/irq/manage.c}:1382), so the line stays masked until the
+thread finishes and the handler cannot run twice at once.
+
+\xpart{e} \textbf{Long critical sections}, and interrupts-off time generally. Reading shows where a
+section starts and ends, but not how long it takes: a loop's bound comes from the device at run
+time, and a call into unfamiliar code has a cost the call site does not show. Use the kernel's
+latency tracers, which \file{kernel/qa.config} enables for this chapter and both kernels have.
+\code{irqsoff} and \code{preemptoff} (\code{CONFIG_IRQSOFF_TRACER}, \code{CONFIG_PREEMPT_TRACER})
+record the longest interrupts-off or preemption-off section since they were reset, with the stack
+that caused it. \code{wakeup_rt} (\code{CONFIG_SCHED_TRACER}) records the longest wait of the
+highest-priority task to get the CPU. An answer that picks per-CPU assumptions has a case too: the
+reliance is an absence, and nothing in the code names it. It must then say what finds it, and no
+tool does. You find it by reading every per-CPU access and asking what keeps the other tasks on
+that CPU away from it.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c12:ex:5}{Priorities}{Design}
+
+\xpart{a} Any two of these:
+\begin{itemize}
+  \item \textbf{Hardware interrupts.} A hard handler runs on top of whatever task is on its CPU,
+    whatever its priority, and on \code{PREEMPT} so do the softirqs processed on the way out of it.
+  \item \textbf{Anything of higher priority}: \code{SCHED_FIFO} and \code{SCHED_RR} tasks at 81 to
+    99, every \code{SCHED_DEADLINE} task, since the deadline class ranks above the real-time one,
+    and the kernel's stop-class threads, \code{migration/N}.
+  \item \textbf{The throttle}, once real-time tasks on the CPU have used their 950 ms of the second
+    (part c).
+\end{itemize}
+Note what does \emph{not}: on \code{PREEMPT_RT} interrupt threads run at \code{SCHED_FIFO} 50
+(\file{kernel/sched/syscalls.c}:858), below 80. That includes the thread that services the device
+the program is measuring, which is harmless only because the program blocks in \code{read}.
+
+\xpart{b} Nothing of lower priority runs on that CPU again. A \code{SCHED_FIFO} task that never
+blocks is never preempted by anything below it, so every ordinary task, including the shell you
+would use to kill it, is starved, and the machine is hung for everything but interrupts and
+higher-priority tasks. \textbf{What saves you is RT throttling.} By default real-time tasks may use
+950,000 us of every 1,000,000 (\file{kernel/sched/rt.c}:15 and~21), so every second the CPU has
+50 ms for everything else. The shell runs, slowly, and you can kill the task. 6.12 also has a
+second safeguard with the same effect, the fair server, which reserves 50 ms in every 1,000 ms for
+ordinary tasks (\file{kernel/sched/deadline.c}:1637).
+
+\xpart{c} \textbf{In every \code{sched_rt_period_us}, one second by default, the real-time tasks on
+a CPU may run for at most 950,000 us between them, so 50 ms of every second is left for everything
+else.} The symptom: a real-time task running flat out stops dead for up to 50 ms once a second, a
+periodic gap that nothing in the task explains, and the kernel prints ``\code{sched: RT throttling
+activated}'' once (\file{kernel/sched/rt.c}:900).
+
+\xpart{d} \textbf{When:} the real-time tasks' CPU use is bounded by design and shown to be,
+because each of them blocks within its period by analysis and by measurement, and a 50 ms stall
+once a second would itself break a deadline. A control loop on a core given over to it is the
+usual case. It is done by writing $-1$ to \code{sched_rt_runtime_us}, which means ``no limit''
+(\file{Documentation/scheduler/sched-rt-group.rst}:104). \textbf{What you owe the next person:} a
+written record of where the setting is made and why; what bounds each real-time task's CPU use,
+and the evidence; what now protects the system from a real-time task that loops, a hardware
+watchdog or a higher-priority monitor; how to recover a board that hangs; and a test that fails if
+the setting is lost or a real-time task spins. The safeguard is gone, and whoever changes the
+real-time code next has to know that.
+
+\xpart{e} It performed an \textbf{admission test}. It added the new task's runtime divided by its
+period to that of every deadline task already admitted and compared the total with what the system
+allows deadline tasks. By default that is the same 95\% of each CPU, since the \code{-rt} knobs are
+used for deadline admission control
+(\file{Documentation/scheduler/sched-deadline.rst}:594). When the total would be exceeded,
+\code{sched_setattr} fails with \code{EBUSY} (\file{kernel/sched/syscalls.c}:687--689).
+\code{SCHED_FIFO} has no admission control at all: it accepts any number of tasks at any priorities
+and finds out at run time that they do not fit. \textbf{A refusal is more useful} because it happens
+once, at configuration time, deterministically, where the program can report it and a test can catch
+it. A missed deadline happens later, intermittently, under a load nobody reproduced, in the field.
+On more than one CPU the test bounds how late a task can be rather than promising it never is
+(\file{Documentation/scheduler/sched-deadline.rst}:453--463), and that is still a statement a
+priority cannot make.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c12:ex:8}{What cyclictest is for}{Design}
+
+\xpart{a} \code{cyclictest} runs one or more threads, normally at a real-time priority. Each sleeps
+until an absolute time, notes when it actually woke, and sleeps again one interval later, and the
+program reports the minimum, latest, average and maximum lateness of those wakeups for each thread.
+It therefore measures how late the timer interrupt and the scheduler deliver a waiting task to its
+CPU, under whatever load runs alongside it.
+
+\xpart{b} The 45 us describes a timer's interrupt and the wakeup of a high-priority thread. Your
+data travels a different path, none of which \code{cyclictest} ran: your device's line and the
+interrupt controller, your handler, the step to its thread, your driver's locks, the wakeup of your
+reader, and your reader's own priority. \code{cyclictest} usually runs at \code{SCHED_FIFO} 80 or
+above, while a reader left at \code{SCHED_OTHER} waits for the fair scheduler, and on
+\code{PREEMPT_RT} your interrupt thread at 50 waits behind any busy real-time task above it. On
+\code{PREEMPT_RT} the timer that wakes a real-time \code{cyclictest} thread even expires in hard
+interrupt context (\file{kernel/time/hrtimer.c}:2043--2044), so its path has no thread step at all.
+Any stage of yours can be late while the timer path is fast.
+
+\xpart{c} It covers the nearest thing to (1) and (3), \emph{for a timer}: the timer interrupt being
+taken, and the woken thread getting the CPU, with no (2) for a real-time thread, as in b). It covers
+none of the path for your device: not (1) for your line, not (2) from your handler to its thread,
+not (3) from your driver's wakeup to your reader, and so not the sum.
+
+\xpart{d} Any two of these:
+\begin{itemize}
+  \item \textbf{A GPIO and an instrument.} The handler, or the program in userspace, toggles a
+    GPIO. An oscilloscope or logic analyser watches it against the signal that caused the
+    interrupt, a signal generator or the device's own line, and the delay between the two edges is
+    measured by something outside the system (\secref{c12:app:b:what-you-would-need-instead}).
+  \item \textbf{A loopback on one clock.} The CPU drives a GPIO output wired to an interrupt input,
+    reading its own counter as it does, and the handler reads the same counter. Both ends are then
+    in one clock domain, which is what \code{qa-dev}'s register gives the course.
+  \item \textbf{The kernel's tracers.} \code{irq_handler_entry} events and the \code{irqsoff},
+    \code{preemptoff} and \code{wakeup_rt} tracers show where the time between handler and task
+    goes. They cannot see the delay before the CPU takes the interrupt, which only an external
+    reference can.
+\end{itemize}
+
+\xpart{e} Because the course runs on an emulator, and an emulated board has no pin to put a probe
+on, so the techniques in d) are not available. A device that stamps the moment it raised its line
+is the only reference point such a target can have, and it lets the technique, subtracting a
+device's timestamp from the handler's, be taught to every reader on the same machine and checked
+automatically by \code{make test}. A real device would bring whatever it happens to do and no
+timestamp at all, since real hardware almost never has one (\secref{c12:app:b2}). The price is the
+caveat in \secref{c12:app:b3}: the device's clock has its own origin, so the interval it gives is
+only a spread.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c12:ex:9}{The trade, measured}{Cross-check}
+
+\xpart{a} The prediction is yours. The usual one is that \code{PREEMPT_RT} lowers both, and half of
+it is wrong: what the course measured is in b).
+
+\xpart{b} What the course measured and published in \secref{c12:app:a8}, one run of 2,000 samples
+each, handler-to-userspace:
+
+\begin{narrowtable}{@{}llrr@{}}
+  \thead{Kernel} & \thead{Load} & \thead{Mean} & \thead{Worst} \\
+  \midrule
+  \code{PREEMPT} & idle & 449 us & 11,321 us \\
+  \code{PREEMPT_RT} & idle & 551 us & 4,964 us \\
+  \code{PREEMPT} & busy & 1,685 us & 29,729 us \\
+  \code{PREEMPT_RT} & busy & 2,393 us & 18,559 us \\
+\end{narrowtable}
+
+\noindent Yours will differ, and \secref{c12:app:b6} says why that is expected.
+
+\xpart{c}
+\begin{itemize}
+  \item \textbf{Which prediction:} with the table above, ``lower maximum'' is right both idle and
+    busy, and ``lower mean'' is wrong both idle and busy.
+  \item \textbf{The mean is worse} because \code{PREEMPT_RT} makes every path do more. Every
+    interrupt costs a switch into its thread and out again, and softirqs run in threads too. Every
+    \code{spinlock_t} acquisition is an \code{rt_mutex} operation that also does
+    \code{rcu_read_lock} and \code{migrate_disable} (\file{kernel/locking/spinlock_rt.c}:50--51),
+    and when contended it sleeps and does inheritance bookkeeping instead of spinning briefly. All
+    of that is paid on every sample. \textbf{The maximum is better} because the long stretches
+    during which nothing could preempt, \code{spinlock_t} sections anywhere in the kernel and softirq
+    processing, are now preemptible, and inversion is bounded by inheritance. The reader's worst
+    wait is no longer the longest non-preemptible section in the kernel. (In this lab, a handler
+    requested with \code{devm_request_irq} is itself forced into a thread on \code{PREEMPT_RT}, so
+    its first statement, the \code{ktime_get_ns()}, runs after the hard-interrupt-to-thread step;
+    part of the thread cost the mean pays is outside the measured interval, which makes the rise in
+    the mean more notable, not less.)
+  \item \textbf{A colleague who measured only the mean} would conclude that \code{PREEMPT_RT} is
+    worse, by 23\% idle ($551 / 449 = 1.23$) and 42\% loaded ($2{,}393 / 1{,}685 = 1.42$), and reject
+    it. For a throughput system they would be right. For anything with a deadline they would be
+    wrong, because a deadline is a statement about the maximum, which in the same runs fell by a
+    factor of 2.3 idle ($11{,}321 / 4{,}964 = 2.28$) and 1.6 loaded ($29{,}729 / 18{,}559 = 1.60$).
+  \item \textbf{In one sentence:} real time is defined by the worst case, and \code{PREEMPT_RT} buys
+    a lower worst case by making the kernel preemptible almost everywhere, which costs something on
+    every path, so a worse average with a better maximum is exactly what was paid for.
+\end{itemize}
+
+\xpart{d} The course published one repeat, of the idle \code{PREEMPT} run (\secref{c12:app:b5}):
+11,321 us and then 2,502 us, a spread of 8,819 us, or a factor of $11{,}321 / 2{,}502 = 4.5$, on one
+kernel with nothing changed. The difference between the kernels' idle maxima was
+$11{,}321 - 4{,}964 = 6{,}357$ us, a factor of 2.3.
+\begin{itemize}
+  \item \textbf{No.} The run-to-run spread, 8,819 us, is larger than the kernel-to-kernel difference,
+    6,357 us, and the repeat, 2,502 us, is below the \code{PREEMPT_RT} maximum of 4,964 us. One pair
+    of runs could have been read either way.
+  \item \textbf{Then you have established nothing about which kernel has the lower maximum.} What you
+    have established is that the maximum of 2,000 samples is not a stable statistic on this target,
+    which is itself the result \secref{c12:app:b5} states. The means point the same way idle and
+    busy, but one run each supports no more than that.
+  \item \textbf{How many:} enough that the two kernels' per-run maxima stop overlapping. If both came
+    from the same distribution, the chance that all $n$ of one kernel's runs fall below all $n$ of
+    the other's is $n!\,n!/(2n)! = 1/\binom{2n}{n}$. That is $1/20 = 5\%$ for three runs each,
+    $1/70 \approx 1.4\%$ for four, and $1/252 \approx 0.4\%$ for five. Four or five runs of each, with
+    no overlap, is what I would defend for the \emph{direction}. For a \emph{bound} no number of
+    two-second runs is enough: that needs hours per run, under the product's load
+    (\secref{c12:app:b5}).
+\end{itemize}
+
+\xpart{e} Everything in these numbers passed through far more than the guest kernel. QEMU translates
+every guest instruction, so every path costs many times what it would on silicon. The interrupt
+controller, the generic timer and \code{qa-dev} itself are device models, and \code{qa-dev}'s sample
+timer is a QEMU timer that fires when QEMU gets round to it. QEMU's vCPUs are threads of an ordinary
+process on the host, scheduled by a host kernel that is not real time and shares its machine with
+everything else running there, so a vCPU descheduled on the host is a stall the guest can neither
+see nor tell apart from its own latency; \secref{c12:app:b6} names that as frequently the largest
+term. Inside the guest, both kernels carry \code{CONFIG_PROVE_LOCKING} and
+\code{CONFIG_DEBUG_ATOMIC_SLEEP} (\file{kernel/qa.config}, \file{kernel/rt.config}), so every lock
+acquisition does the validator's bookkeeping. \code{qa_latency_test} sets no scheduling policy, so
+the reader is an ordinary \code{SCHED_OTHER} task, and under load it competes as an equal with four
+processes that never block. The loaded figures are to a large extent the fair scheduler's time
+slices, not interrupt latency. The measurement is also blind to parts of the path by construction.
+Its absolute figure starts at the handler's \code{ktime_get_ns()}, so the time from the device
+raising its line to the handler running appears only as a spread above an unknown minimum. On
+\code{PREEMPT_RT} a handler requested with neither \code{IRQF_NO_THREAD} nor \code{IRQF_ONESHOT} is
+forced into a thread (\file{kernel/irq/manage.c}:1368--1404), so its first statement runs in the
+thread, and the step from hard interrupt to thread moves out of the absolute interval into the
+spread: the two kernels' columns do not cover quite the same stretch of path. The device rewrites
+its timestamp at every sample (\file{tools/qa-dev/qa-dev.c}:171), so a handler that runs more than
+one period late reads a later sample's stamp, and the spread cannot show a delay longer than about
+one period, which is exactly the kind that matters. And 2,000 samples are two seconds, too short to
+have met the rare events a worst case is made of; one repeat moved the maximum by a factor of 4.5.
+\textbf{So the absolute values cannot transfer.} Their dominant terms belong to the host and the
+emulator, and none of those exists on the product; on real silicon the same kernel's figure would
+typically be tens of microseconds (\secref{c12:app:b6}). \textbf{What survives} is what is common to
+both columns and therefore cancels: the same emulator, host, load, reader and method on both
+kernels, so the direction of the trade, a mean that rises under \code{PREEMPT_RT} and a maximum
+that falls, is a property of the mechanism, and it held idle and busy alike. \textbf{What does not
+survive} is every number, the factors of 2.3 and 1.6, the percentages, and even the direction of
+the idle maximum until repeated runs separate the two kernels, since one repeat of a single kernel
+moved further than the gap between them.
+
+\xpart{f} The entry, for the kernel a deadline would choose:
+
+\begin{aside}
+\textbf{Handler-to-userspace latency}, from the \code{qa_latency} interrupt handler to a blocking
+\code{read()} returning in a \code{SCHED_OTHER} process: mean 551 us, maximum 4,964 us, idle; mean
+2,393 us, maximum 18,559 us, under four CPU-bound processes. Linux 6.12.30 \code{PREEMPT_RT}, arm64
+defconfig with \file{kernel/qa.config} and \file{kernel/rt.config}, including
+\code{CONFIG_PROVE_LOCKING} and \code{CONFIG_DEBUG_ATOMIC_SLEEP}. \code{qemu-system-aarch64} 9.2.0,
+\code{-M virt -cpu cortex-a72 -smp 2 -m 512}, software emulation, on a named host with its load
+stated. Device period 1 ms; 2,000 samples per condition, about two seconds; one run each, not
+repeated.
+\end{aside}
+
+\noindent The sentence: \emph{``This is not interrupt-to-userspace latency: it omits the time from
+the device asserting its interrupt to the handler running, which this target can report only as a
+spread above an unknown minimum; and because it was measured under an emulator whose host
+scheduling dominates it, it predicts nothing about this kernel on real hardware.''} Written out
+with every condition, the entry shows that a figure from this target belongs in a lab report and
+never in a product datasheet. For a datasheet you measure the product, as in
+\secref{c12:app:b:what-you-would-need-instead}.
+
+\xpart{g} One defensible answer: \textbf{a latency measurement on the product's own hardware}, with
+debug options off, for hours, under the product's load, against an external reference. Its latency
+has been characterised only inside an emulator, and \secref{c12:app:b6} is where this book says why
+that characterisation predicts nothing about silicon. The first place the course made the same
+point about a number and its conditions was Chapter~\ref{c2:ch}'s Cross-check,
+Exercise~\ref{c2:ex:9}. An answer that names concurrency testing instead is as good if it argues
+why that comes first. Every test in the course runs one thing at a time, and lockdep finds only the
+orderings your tests reach (\secref{c7:app:b5}), so a driver whose locking has never been exercised
+under contention is unverified in a way no latency figure touches.

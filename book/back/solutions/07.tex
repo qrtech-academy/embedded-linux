@@ -1,0 +1,301 @@
+% Solutions to the Chapter 7 exercises that are not code, from lectures/L07/appendix/c_exercises.md.
+% Exercises 7.6 and 7.7 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 7: Concurrency and Locking}
+\label{sol:sec:c7}
+Answers to the exercises in \secref{c7:sec:exercises}. Exercises~\ref{c7:ex:6} and~\ref{c7:ex:7}
+are Code, and are checked on the target as their Check yourself lines say.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c7:ex:1}{Where concurrency comes from}{Recall}
+
+\xpart{a} SMP, preemption, interrupts, timers and workqueues (\secref{c7:app:a1}). On a single-CPU
+kernel built with \code{PREEMPT_NONE}, two remain: interrupts, and timers, because a
+\code{timer_list} callback runs in softirq context on the way out of an interrupt and so can run in
+the middle of your code just as a handler can. SMP goes with the second CPU and preemption with
+\code{PREEMPT_NONE}. A workqueue item runs in a kernel thread, which on such a kernel gets the CPU
+only when your code gives it up by sleeping or returning, so it can overlap you only across a sleep.
+
+\xpart{b} That nothing else runs this code at the same time, and that it cannot be stopped
+mid-function. So it protects shared data, if at all, by disabling interrupts on its own CPU, which
+does nothing about another CPU running the same code at the same moment, and its read-modify-write
+sequences can be preempted halfway with another task running the same code in between. What breaks
+is data shared between callers, silently and intermittently: lost updates, a ring buffer whose level
+no longer matches its contents. The fix is a lock, which the old code has no notion of.
+
+\xpart{c} Interrupts. The answer does not change on a single CPU: the handler can run on top of
+\code{read()} on the same CPU at any point where interrupts are enabled, which is the case
+\code{spin_lock_irqsave} exists for (\secref{c7:app:a5}). A second CPU adds SMP as well, since the
+handler can then also run on the other CPU while \code{read()} runs, and that is what the lock
+itself excludes. \code{spin_lock_irqsave} covers both.
+
+\xpart{d} Three: a load of the counter into a register, an add, and a store back. The add happens in
+a register, where no other CPU can see it. What matters is the other CPU's load and store falling
+between this CPU's load and its store: if both load $n$ before either stores, both store $n+1$, and
+one of the two increments is lost (\secref{c7:app:a2}).
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c7:ex:2}{Atomics and their limits}{Recall}
+
+\xpart{a} The ring buffer of Chapter~\ref{c5:ch}. Its invariant: \code{level} is between 0 and the
+capacity, and the \code{level} bytes starting at \code{head}, wrapping at the capacity, are exactly
+the bytes written and not yet read, in the order they were written. It mentions the head, the level
+and the array at once, so making each of them atomic leaves it breakable between any two of their
+updates (\secref{c7:app:a3}); Exercise~\ref{c5:ex:8} constructs an interleaving that does it.
+
+\xpart{b} Make \code{head} and \code{level} plain integers and put the whole test, store and
+increment inside one critical section: take a spinlock; if \code{level < capacity}, store the byte
+at \code{(head + level) \% capacity} and increment \code{level}; release the lock. A spinlock,
+because the section is a handful of instructions that never sleep and so can be held briefly from
+any context; \code{spin_lock_irqsave} if an interrupt handler also reads or writes the buffer. A
+mutex would be correct too if every caller is in process context, but buys nothing for a section
+this short. The point is that the test and the update become one indivisible step, so no second
+writer can pass the same test and pick the same slot in between.
+
+\xpart{c} Atomics protect one variable; locks protect an invariant: if what must be true before and
+after mentions more than one variable, you need a lock.
+
+\xpart{d} The compiler may load \code{flag} once, before the loop. Nothing in the body can change
+\code{flag} as far as the compiler can see, no store, no call and no barrier, so reading it again
+would be redundant, and the loop spins on a register forever. The fix is
+\code{while (!READ_ONCE(flag)) cpu_relax();}, with the thread that sets it using
+\code{WRITE_ONCE(flag, 1)}. It is not a memory barrier: \code{READ_ONCE} forces one real load on
+every iteration and orders nothing on the CPU. If the waiter must then read data the other thread
+wrote before setting the flag, that needs ordering as well: \code{smp_store_release} to set it and
+\code{smp_load_acquire} to read it, or a lock.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c7:ex:3}{Choosing a primitive}{Hand calculation}
+
+\xpart{a} A spinlock: two kernel threads run in process context, no handler touches the counter,
+and the section is one increment, far too short to be worth sleeping over. (A mutex would also be
+correct, and an \code{atomic_t} better still, but that is not one of the choices.)
+
+\xpart{b} A spinlock with \code{_irqsave}: the handler takes the lock in interrupt context, so
+\code{read()} must keep interrupts off its own CPU while it holds it, and \code{irqsave} does so
+without assuming the state it was called in.
+
+\xpart{c} A mutex: \code{copy_to_user} may fault and sleep, so the section may sleep, and only a
+mutex may be held across a sleep.
+
+\xpart{d} A spinlock: 2 microseconds is short, nothing in the sequence sleeps, and one sequence must
+not be interleaved with another CPU's. If the interrupt handler also touches those registers, it is
+\code{_irqsave}, as in b).
+
+\xpart{e} A spinlock with \code{_irqsave}: the timer callback runs in softirq context, so
+\code{write()} must keep it off its own CPU while it holds the lock, and with interrupts off no
+softirq runs there either. (The exact minimum is \code{spin_lock_bh} in \code{write()} and a plain
+\code{spin_lock} in the callback.)
+
+\xpart{f} A mutex: an allocation that may have to reclaim is \code{GFP_KERNEL} and may sleep, so
+the lock held across it must be one a sleeper may hold. The alternative is to allocate before
+taking a spinlock.
+
+\xpart{g} b) and e). In b), \code{read()} holds the plain spinlock, the device interrupts that CPU,
+and the handler spins on the lock; the holder cannot run again until the handler returns, and the
+handler never returns, so that CPU is gone, and so is every other CPU that then wants the lock. In
+e) it is the same with the timer: the timer interrupt arrives while \code{write()} holds the lock,
+the timer softirq runs the callback on the way out of it, on the same CPU, and the callback spins on
+a lock whose holder is underneath it. (A plain spinlock in c) or f) is a different bug, sleeping
+while holding one, which \code{CONFIG_DEBUG_ATOMIC_SLEEP} reports.)
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c7:ex:4}{What the race costs}{Hand calculation}
+
+\xpart{a} $4 \times 20{,}000 = 80{,}000$.
+
+\xpart{b} $80{,}000 - 63{,}562 = 16{,}438$ lost, and $16{,}438 / 80{,}000 = 20.5\%$.
+
+\xpart{c} The range is $30{,}047 - 1{,}564 = 28{,}483$ increments, and
+$28{,}483 / 80{,}000 = 35.6\%$ of the expected total: the runs lost from $1{,}564 / 80{,}000 =
+2.0\%$ to $30{,}047 / 80{,}000 = 37.6\%$. The spread says that the loss is not a property of the
+program but of the timing of one run. A single run is one draw from a very wide distribution and
+predicts nothing about the next: the same code on the same machine lost 2\% once and 38\% another
+time, so one run can neither size the bug nor show whether a change made it better.
+
+\xpart{d} Zero: yes. A lost update needs one thread's store to land between another thread's load
+and store; if the threads never run their loops at the same time, that never happens and the count
+is exact. It has been seen: the first version of the module, without the barrier, lost nothing
+three runs in a row, and at 200 and 2,000 increments per thread every run was exact
+(\secref{c7:app:a2}).
+
+60,000: yes, in principle, although nothing close to it was observed. A lost update is a stale
+store: a thread writes back the value it loaded plus one, wiping out every increment made since its
+load, not just one. A thread preempted between its load and its store, on a \code{CONFIG_PREEMPT}
+target running four threads on two CPUs, can come back after the others have added thousands and
+erase all of them with a single store. The final value can in fact be as low as 2: thread A loads 0;
+the others run everything except B's last increment, reaching 59,999; A stores 1; B loads 1; A runs
+its remaining 19,999, reaching 20,000; B stores 2. So a loss of 60,000, a final count of 20,000, is
+possible. The largest loss measured was 30,047.
+
+\xpart{e} First, one sample of a nondeterministic result. A single exact run is what the broken
+program produces some of the time, and at 2,000 per thread it produced it every time, so it says
+nothing about the next run. Second, taking a run as the argument for correctness. \code{counter++}
+on a shared variable from several threads is three unprotected steps, and that is a race by
+construction whatever any run returns: whether the lock is needed follows from the code, and an
+observation can show a bug but never its absence.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c7:ex:5}{Atomic context}{Design}
+
+\xpart{a} Not atomic: \code{read()} runs in process context for the calling task. Legal.
+
+\xpart{b} Atomic, in an interrupt handler. Illegal: \code{GFP_KERNEL} may sleep to reclaim.
+
+\xpart{c} Atomic. Legal: \code{GFP_ATOMIC} never sleeps, and the handler must cope with
+\code{NULL}.
+
+\xpart{d} Atomic, since a spinlock is held. Illegal: \code{mutex_lock} sleeps when the mutex is
+contended.
+
+\xpart{e} Not atomic: holding a mutex does not make you atomic, and you are still in process context.
+Legal; the section inside the spinlock is then atomic, and nothing in it may sleep.
+
+\xpart{f} Atomic. Illegal: \code{copy_to_user} may fault, and bringing the page in may sleep.
+
+\xpart{g} Atomic: a timer callback runs in softirq context. Illegal: \code{msleep} sleeps, every
+time.
+
+\xpart{h} b), d) and f). g) never works: \code{msleep} always calls into the scheduler, and from
+softirq context that prints ``BUG: scheduling while atomic'' on the first run. The three that
+usually work:
+\begin{itemize}
+  \item \textbf{b)} works because the allocation is served from a slab cache without reclaim. It
+    fails the day memory is short and the allocator has to reclaim, which means sleeping inside a
+    handler.
+  \item \textbf{d)} works because an uncontended \code{mutex_lock} is a single atomic
+    compare-and-exchange and never sleeps. It fails the first time another task holds the mutex,
+    and the spinlock holder goes to sleep.
+  \item \textbf{f)} works because the user's buffer is resident, so the copy never faults. It fails
+    when the page is not there, never touched or since reclaimed, and the copy has to fault it in,
+    which may sleep. On a kernel that counts preemption, as this course's does, the fault handler
+    sees that it is in atomic context and declines the fault (\code{faulthandler_disabled()},
+    \file{include/linux/uaccess.h}), so the copy comes up short and the driver returns
+    \code{-EFAULT} instead. Either way it happens only under memory pressure.
+\end{itemize}
+
+\xpart{i} \code{CONFIG_DEBUG_ATOMIC_SLEEP}. It puts a check at the top of every call that might
+sleep, before the call decides whether it has to: \code{might_alloc()} in \code{kmalloc},
+\code{might_sleep()} in \code{mutex_lock}, and \code{might_fault()} in \code{copy_to_user}. All
+three print ``BUG: sleeping function called from invalid context'' the first time they run in
+atomic context, on a machine with plenty of memory, an uncontended mutex and a resident page.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c7:ex:8}{What the tools do not see}{Design}
+
+\xpart{a} Lockdep watches lock acquisitions. At each one it records which locks were already held,
+adds the resulting edges to its graph and checks them, and checks the context the lock is taken in
+(\secref{c7:app:b3}). \code{qa_race} with \code{locked=0} takes no lock at all, so as far as lockdep
+is concerned nothing happens: no acquisition, no edge, no context to check. The lost updates are
+plain loads and stores to a shared variable, of which lockdep has no model; it cannot know that the
+variable needed a lock.
+
+\xpart{b} Lockdep checks the locks you take, never the locks you did not take. A codebase that
+``passes with lockdep enabled'' has shown that on the paths its tests ran, the locks it took were
+taken in a consistent order and in legal contexts. That says nothing about data that should have
+had a lock and had none, and nothing about paths the tests never ran.
+
+\xpart{c}
+\begin{itemize}
+  \item \textbf{Waiting for an event rather than a lock:} two threads each wait for a completion,
+    or a wait queue condition, that only the other will signal. The graph is built from lock
+    acquisitions, and waiting for an event is not one, so the cycle has no edges.
+  \item \textbf{Waiting on hardware:} a driver holds a lock while it polls for a status bit, or
+    waits for an interrupt, that never comes. The other party in the cycle is a device, which
+    lockdep cannot see at all.
+\end{itemize}
+
+\xpart{d} The error paths: an allocation that fails, a device that times out or answers wrongly or
+disappears, a probe that fails halfway and unwinds, a signal that interrupts a sleep, a remove while
+a file is still open. A test suite drives the normal path because that is what it can cause;
+failures have to be injected, and mostly are not. It matters more for lock ordering because an
+inversion takes two orders and lockdep reports only once it has seen both, and the unusual order
+typically lives on exactly those paths: cleanup that takes locks in the reverse of the order set-up
+took them. The failure is also not confined to the rare path. Most bugs on an unexercised path hurt
+only the call that takes it; an ordering bug deadlocks the machine when the rare path meets the
+common one.
+
+\xpart{e} The module's licence is not GPL-compatible, so loading it tainted the kernel, and that
+taint is one that switches lock debugging off for the rest of the boot: the module loader adds
+\code{TAINT_PROPRIETARY_MODULE} with \code{LOCKDEP_NOW_UNRELIABLE}, and \code{add_taint} then turns
+lockdep off (\file{kernel/module/main.c}, \file{kernel/panic.c}). The line is
+\code{Disabling lock debugging due to kernel taint}. You first met it in Chapter~\ref{c4:ch}, in
+Exercise~\ref{c4:ex:7}.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c7:ex:9}{A number computed twice}{Cross-check}
+
+\xpart{a} $4 \times 20{,}000 = 80{,}000$.
+
+\xpart{b} A correct module prints \code{actual=80000 lost=0} on every run; with the spinlock
+switched on, the course's runs all returned exactly 80,000 (\secref{c7:app:a2}).
+
+\xpart{d} Worked here with the course's ten unlocked runs from \secref{c7:app:a2} in place of your
+five.
+\begin{itemize}
+  \item With the lock, the result is determined by the program rather than sampled from it: each of
+    the 80,000 increments is a whole load, add and store that no other increment can interleave
+    with, so the counter must end at $4 \times 20{,}000$, and 79,999 would be a bug, not noise.
+    Nothing is measured on a scale that has an error; the program counts. Chapter~\ref{c3:ch}'s
+    \code{Image} size is an exact count too, but not one you can predict: it depends on the
+    configuration, the compiler and the source, so you measure it, and a different build
+    legitimately gives a different number. Chapter~\ref{c2:ch}'s context-switch rate is a rate
+    over a sampling interval, which varies with the load and with the interval you happen to catch,
+    so two correct measurements differ. Here the prediction is arithmetic, and the measurement must
+    agree with it to the last digit.
+  \item The ten losses sum to 154,616, so the mean loss is 15,461.6, which is 19.3\%, and the mean
+    \code{actual} is 64,538.4. The range is 1,564 to 30,047, a spread of 28,483, or 35.6\% of the
+    expected total. The mean on its own is not useful: the spread is nearly twice the mean
+    ($28{,}483 / 15{,}461.6 = 1.84$), and both depend on the conditions, the number of threads and
+    CPUs, the increments per thread, the barrier and the load. To mean anything it needs the spread,
+    the number of runs and the conditions beside it; and what matters for the bug is not the average
+    loss but that the loss is not zero.
+  \item If every collision lost exactly one increment, the worst run, 30,047 lost, took 30,047
+    collisions. But a thread preempted between its load and its store erases every increment made
+    while it was off the CPU, so a single collision can lose thousands. Each collision loses at
+    least one, so 30,047 is an upper bound on the number of collisions, not a count. Even as a
+    count it is plausible: 30,047 in a few hundred milliseconds is of the order of 100,000 a
+    second ($30{,}047 / 0.3\,\mathrm{s} \approx 100{,}000$), for two CPUs doing nothing but load,
+    add and store on one shared variable. The collision rate is limited by the rate of increments,
+    not by the clock.
+\end{itemize}
+
+\xpart{e} The course's twelve runs (\secref{c7:app:a2}): at 200 and at 2,000 per thread, 0\%, 0\%
+and 0\%; at 20,000, 23.3\%, 20.8\% and 6.9\%; at 200,000, 31.7\%, 34.9\% and 26.5\%.
+\begin{itemize}
+  \item The loss appears at 20,000 and at 200,000. At 200 and 2,000 every run is exact.
+  \item The bug is not absent at that size; the code is identically broken. What differs is that at
+    2,000 per thread no two threads are in their loops at the same time for long enough to collide:
+    each thread's work is over before the others have got going, so the race has no window to
+    happen in.
+  \item Released together means released from the barrier together, not running together. After the
+    release each thread still has to be woken and scheduled onto a CPU, and with four threads on two
+    CPUs two of them wait for a CPU in any case. The overlap has to last long enough for two threads
+    to be executing their loops on the two CPUs at once, or for one to be preempted between its load
+    and its store, and it is competing against the wake-up and scheduling latency after the release:
+    at 200 or 2,000 increments the whole loop is shorter than that stagger. The measurements put the
+    threshold between 2,000 and 20,000 increments per thread, and \secref{c7:app:a2} estimates it
+    at about ten thousand. How long that is in time depends on this machine's increment rate and its
+    scheduling latency, which the chapter does not publish; time a run near the threshold to find
+    out.
+  \item They would conclude that the code is correct, and they would be very confident, every run
+    exact, run after run. They would be wrong, and the confidence would come from repeating a test
+    that could not exercise the race, which is no evidence at all.
+\end{itemize}
+
+\xpart{f} The bug report gets the unpredictable one: the unlocked losses, with their spread and
+the conditions they came from (four threads, 20,000 increments each, two CPUs, the barrier),
+because a report's job is to show that the bug exists, how bad it is, and how to reproduce it. The
+test gets the predictable one: \code{locked=1} must give exactly 80,000, because a test has to pass
+or fail the same way on the same code every time, and only an exact prediction can be asserted
+exactly. An assertion on the unlocked run can only be ``lost more than nothing'', and even that is
+safe only because the barrier and 20,000 increments made a zero loss something never measured,
+which is why \file{run.sh} runs it three times and asks only that at least one run lose something.
+
+\xpart{g} For this program, yes. The only shared state is one counter, and \code{atomic_inc} makes
+its load, add and store indivisible, so the count comes out at exactly 80,000. With a running
+maximum alongside, no. The counter and a maximum that must agree with it form an invariant over two
+variables, and updating the maximum is a read, compare and write separate from the increment: two
+threads can each read, compare and store in the wrong order, and a reader can see one variable
+updated and not the other. Per-variable atomicity does not make the sequence atomic.
+\Secref{c7:app:a3} answers it: atomics protect one variable, locks protect an invariant.

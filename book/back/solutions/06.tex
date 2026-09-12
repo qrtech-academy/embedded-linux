@@ -1,0 +1,352 @@
+% Solutions to the Chapter 6 exercises that are not code, from lectures/L06/appendix/c_exercises.md.
+% Exercises 6.7 and 6.8 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 6: Memory, MMIO, and Resource Management}
+\label{sol:sec:c6}
+Answers to the exercises in \secref{c6:sec:exercises}. Exercises~\ref{c6:ex:7} and~\ref{c6:ex:8}
+are Code, and are checked on the target as their Check yourself lines say.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c6:ex:1}{Two kinds of address}{Recall}
+
+\xpart{a} \code{void *}: yes; it is a kernel virtual address, such as \code{kmalloc} returns.
+\code{phys_addr_t}: no; it is a number, where something sits on the bus, and the CPU can reach it
+only through a mapping, which for a device's registers is \code{ioremap}. \code{void __iomem *}: not
+directly; only through the accessors, \code{readl} and \code{writel} and their family.
+\code{char __user *}: no; only through \code{copy_to_user}, \code{copy_from_user},
+\code{get_user} and \code{put_user}, which check the address and survive a fault on it.
+
+\xpart{b} They put a pointer in an address space of its own. When \code{sparse} runs,
+\code{__iomem} expands to \code{__attribute__((noderef, address_space(__iomem)))}, and
+\code{__user} to the same with its own space (\file{include/linux/compiler_types.h}); for the
+compiler they expand to nothing. \code{sparse}, run with \code{make C=1}, then warns wherever such a
+pointer is dereferenced or passed where a pointer to another address space is expected: a user
+pointer handed to \code{memcpy}, or an \code{__iomem} pointer stored in a \code{void *}. The
+annotation records in the type which side owns the address, and the checker enforces it.
+
+\xpart{c} No to both. An entry means that somebody registered the range in the kernel's resource
+tree: a driver that called \code{request_mem_region}, or the kernel itself for System RAM and its
+own image. It is bookkeeping, and says nothing about whether a virtual mapping exists; mapping is
+\code{ioremap}, a separate call, and a driver can map a range without claiming it
+(\secref{c6:app:b2}). Absence means only that nobody has claimed the range. \code{qa-dev} was
+present and answering at \code{0x0C000000} from the first boot, and Exercise~\ref{c1:ex:7} found
+nothing there because no driver for it existed until this chapter's.
+
+\xpart{d} The check. The code works because it still reaches the registers through \code{readl},
+and C converts a \code{void *} to the accessor's \code{const volatile void __iomem *} argument
+without complaint. What is gone is the annotation that made a mistake visible: the next change
+that dereferences \code{regs} directly, or hands it to \code{memcpy}, compiles silently and passes
+\code{sparse}, and on an architecture where registers need their own instructions or byte handling
+that code is simply wrong. You have also lost the documentation: a reader can no longer tell from
+the type that the pointer is not memory.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c6:ex:2}{The allocators}{Recall}
+
+\xpart{a}
+\begin{itemize}
+  \item \textbf{48-byte state structure:} \code{kzalloc(sizeof(*priv), GFP_KERNEL)}. It is small,
+    comes from a slab cache, and is zeroed, so no field starts as garbage.
+  \item \textbf{2 MB software buffer:} \code{vmalloc}, or \code{kvmalloc}. Nothing needs it
+    physically contiguous, and as one contiguous block it would be $2\,\mathrm{MB} / 4\,\mathrm{KB}
+    = 512$ pages, order 9, which a system that has been up for a while often cannot supply.
+  \item \textbf{16 KB DMA buffer:} \code{kmalloc(..., GFP_KERNEL)}, which is physically contiguous
+    and at four pages, order 2, small enough to succeed on a fragmented system, then handed to the
+    device through the DMA API with \code{dma_map_single}; or \code{dma_alloc_coherent}, which
+    allocates and maps in one call. Never \code{vmalloc} (\secref{c6:app:a6}).
+  \item \textbf{1 MB buffer hardware never sees:} \code{kvmalloc}. Contiguity is not needed, so it
+    can try \code{kmalloc} for the 256 pages, order 8, and fall back to \code{vmalloc} when that
+    fails. Free it with \code{kvfree}.
+\end{itemize}
+
+\xpart{b} 131072 bytes is 128 KB, $131072 / 4096 = 32$ pages, order 5. \code{kmalloc} serves
+anything above 8 KB, its largest slab cache on 4 KB pages, straight from the page allocator, so the
+request needs one free, physically contiguous block of 32 pages. On a freshly booted machine free
+memory is in large blocks; after three weeks it is scattered in small ones, and there can be plenty
+of it free with no block of order 5 anywhere. Order 5 is also above \code{PAGE_ALLOC_COSTLY_ORDER},
+which is 3 (\file{include/linux/mmzone.h}): the allocator gives an allocation that size a limited
+attempt at reclaim and compaction and then returns \code{NULL}, rather than retrying as it would for
+a small one. The file is \file{/proc/buddyinfo}, which lists the free blocks of each order in each
+zone; on the customer's machine the columns from order 5 up are zero or close to it, while
+\file{/proc/meminfo} still shows memory free.
+
+\xpart{c} Because you do not know which you got. \code{kvmalloc} returns \code{kmalloc} memory when
+the \code{kmalloc} attempt succeeds and \code{vmalloc} memory when it does not, and nothing tells the
+caller which. In testing the first attempt always succeeds, so the driver works; on the day
+fragmentation defeats it, the buffer is \code{vmalloc} memory, which is not physically contiguous,
+and \code{dma_map_single} refuses it with a warning and \code{DMA_MAPPING_ERROR}
+(\code{dma_map_single_attrs} checks \code{is_vmalloc_addr}, \file{include/linux/dma-mapping.h}).
+It fails exactly where fragmentation made the difference, which is in the field.
+
+\xpart{d} \code{kmalloc} and \code{kzalloc} go with \code{kfree}, \code{vmalloc} with \code{vfree},
+\code{kvmalloc} with \code{kvfree}, and \code{alloc_pages} with \code{__free_pages}, which takes the
+\code{struct page *} and the order; \code{free_pages} takes an address and goes with
+\code{__get_free_pages}. Mismatched, \code{vfree} of \code{kmalloc} memory finds no \code{vmalloc}
+area, warns ``Trying to vfree() nonexistent vm area'' and frees nothing, which is a leak;
+\code{kfree} of \code{vmalloc} memory takes an address outside the linear map for a slab object,
+which is undefined and at best an immediate oops. The mismatch that survives testing is \code{kfree}
+of \code{kvmalloc} memory: correct for as long as \code{kvmalloc} returns \code{kmalloc} memory,
+which in testing is always, and a crash the first time it falls back. \code{kvfree} checks which it
+was given, and is correct for both.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c6:ex:3}{GFP flags}{Hand calculation}
+
+\xpart{a} \code{GFP_KERNEL}. \code{read()} runs in process context on behalf of the caller, where
+sleeping is allowed, so nothing goes wrong, provided no spinlock is held at the allocation.
+
+\xpart{b} \code{GFP_ATOMIC}. \code{GFP_KERNEL} may enter direct reclaim and sleep, and a handler may
+not sleep. With \code{CONFIG_DEBUG_ATOMIC_SLEEP} the kernel prints ``BUG: sleeping function called
+from invalid context'' on the first call, before it has needed to sleep; without it the code works
+until the day the allocator has to reclaim, and then sleeps in interrupt context: ``BUG: scheduling
+while atomic'' and quite possibly a hung CPU.
+
+\xpart{c} \code{GFP_ATOMIC}; or better, allocate with \code{GFP_KERNEL} before taking the lock and
+do only the linking-in under it. With \code{GFP_KERNEL} the holder may sleep with the lock held and
+preemption disabled: ``scheduling while atomic'', every other CPU that wants the lock spinning while
+it sleeps, and a deadlock if the task scheduled in its place on the same CPU wants the lock too.
+
+\xpart{d} \code{GFP_KERNEL}. A module's init function runs in process context, in the
+\code{finit_module} system call made by \code{insmod}, and may sleep. Nothing goes wrong.
+
+\xpart{e} The only sense in which it is high priority is that it may dip into a reserve kept below
+the normal watermark: \code{GFP_ATOMIC} is \code{__GFP_HIGH | __GFP_KSWAPD_RECLAIM}
+(\file{include/linux/gfp_types.h}). What it cannot do is what makes an allocation succeed under
+pressure: reclaim, write back, compact, and wait for any of them; it may only wake \code{kswapd}. So
+\code{GFP_ATOMIC} is the one more likely to return \code{NULL}. When the free pages and the reserve
+are gone it fails at once, where \code{GFP_KERNEL} would have reclaimed memory and succeeded. That
+is why code using it must handle failure.
+
+\xpart{f} No. It is a bug that has not fired yet. It works because every allocation so far found
+memory without needing to reclaim, so it never slept. It appears when memory pressure forces the
+allocator into direct reclaim while the spinlock is held: the task sleeps in atomic context, which
+is ``scheduling while atomic'', a stall on every CPU waiting for the lock, or a deadlock.
+\code{CONFIG_DEBUG_ATOMIC_SLEEP} would have reported it on the first run: every \code{kmalloc}
+calls \code{might_alloc()}, which calls \code{might_sleep_if()} for any flag that allows blocking
+(\file{include/linux/sched/mm.h}), so the check fires whenever the line runs, whether or not it
+needed to sleep.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c6:ex:4}{Translating a device tree address}{Hand calculation}
+
+\xpart{a} \code{0x40002000}, for \code{0x100} bytes, which is 256. The \code{reg} is read in the
+bus's cells, one address and one size: child address \code{0x2000}, length \code{0x100}. The bus's
+\code{ranges} maps child \code{0x0} to parent \code{0x0_40000000} for \code{0x1000000} bytes, and
+\code{0x2000} lies inside that child window, so
+\[
+  \texttt{0x40000000} + (\texttt{0x2000} - \texttt{0x0}) = \texttt{0x40002000}.
+\]
+The parent is the root, whose address space is the CPU's physical address space, so the translation
+ends there.
+
+\xpart{b} Two: one address cell and one size cell. You know from the \emph{parent}: \code{reg} is
+read in the \code{\#address-cells} and \code{\#size-cells} of the node's parent, and
+\code{bus@40000000} declares one of each. The widget's own properties say nothing about it.
+
+\xpart{c} Four. An entry in \code{ranges} is a child address, a parent address and a length. The
+child address is in the bus's own \code{\#address-cells}, one cell: \code{0x0}. The parent address is
+in the parent's, and the root declares two: \code{0x0 0x40000000}, the high cell and then the low,
+so \code{0x0_40000000}. The length is in the bus's \code{\#size-cells}, one cell: \code{0x1000000}.
+$1 + 2 + 1 = 4$.
+
+\xpart{d} They map physical \code{0x2000}, which is not the widget but whatever this SoC decodes at
+that address: on many parts boot ROM or on-chip SRAM, on some nothing at all. Most likely they read
+something plausible, the contents of a ROM or zeros, with no error of any kind, as \code{base=0xC}
+does on \code{qa-dev} in \secref{c6:app:b6}; if nothing decodes there, the first read raises a
+synchronous external abort. Either way it is the identity check that tells them.
+
+\xpart{e} Child address \code{0x0} on this bus is address \code{0x40000000} on the parent bus, for
+\code{0x1000000} bytes, which is 16 MB: the bus's addresses \code{0x0} to \code{0xFFFFFF} are the
+parent's \code{0x40000000} to \code{0x40FFFFFF}.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c6:ex:5}{Ordering}{Design}
+
+\xpart{a} \code{writel} for \code{CTRL} and \code{readl} for \code{STATUS}, the ordered defaults.
+With \code{_relaxed} for both, their order does not change: both go to one device through the
+mapping \code{ioremap} made, and accesses from one CPU to one device arrive in program order
+whether relaxed or not (\secref{c6:app:b5}; \file{Documentation/memory-barriers.txt}). What goes
+wrong is something else, and it goes wrong with the ordered forms too. A conversion takes time, and
+a status read issued straight after the command will usually find it not finished. The driver must
+poll \code{STATUS} until it says done, with a timeout, which is what \code{readl_poll_timeout} does,
+or wait for the device's interrupt.
+
+\xpart{b} Nowhere among the register writes themselves. All seventeen go to one device, and relaxed
+accesses to one device stay in program order, so the sixteen configuration writes land before
+\code{GO} without any barrier. A barrier is needed in one place: before the \code{GO} write, and
+only if the device will read something from RAM that the driver wrote first, a buffer or a
+descriptor. So the sixteen are \code{writel_relaxed} and \code{GO} is a \code{writel}. That buys
+sixteen barriers fewer on every start; on arm64 each \code{writel} puts a \code{dmb oshst} in front
+of its store (\file{arch/arm64/include/asm/io.h} and \file{barrier.h}). It is a small saving, and
+worth having only on a path where it has been measured to matter.
+
+\xpart{c} Because what you observe points away from the cause. The failure is intermittent and
+depends on timing, so it appears on one machine and not another, and under load rather than on the
+bench. Adding a \code{printk} or attaching a debugger changes the timing and makes it vanish. It
+shows up later and somewhere else, as data that is wrong, never at the line that is missing a
+barrier. And the code, read line by line, is correct in program order, which is the order everyone
+reads it in. A strongly ordered machine, such as an x86 desktop, never reorders a store to memory
+past a later write to a register, so the code works there every time.
+
+\xpart{d} Because real silicon is not lenient in any predictable way. On a real device a byte or
+halfword write to a 32-bit register may be widened by the interconnect with the other bytes written
+as zeros, or dropped, or answered with a bus error; a narrow read of a register with side effects,
+such as \code{SAMPLE}, pops a whole sample and delivers a quarter of it. None of those is what the
+driver meant, and which one you get depends on the chip. A model that widened quietly would let a
+wrong driver pass every test here and fail on the first board; one that rejects the access makes
+the bug fail here, where a failure costs a reboot. The documented access width is part of a
+register's contract, and the model enforces it.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c6:ex:6}{Coherent or streaming}{Design}
+
+\xpart{a} \code{dma_alloc_coherent}. Both sides touch small entries constantly: the driver writes
+an entry, the device reads it and writes a status back, thousands of times a second. With a
+streaming mapping every exchange would need a sync in each direction; coherent memory makes each
+side's writes visible to the other without one, and the ring is small enough that slower uncached
+CPU access costs nothing that matters. It still needs the \code{writel} barrier before the doorbell,
+because coherent does not mean ordered (\secref{c6:app:a6}).
+
+\xpart{b} \code{dma_map_single} with \code{DMA_FROM_DEVICE}, on a buffer from \code{kmalloc} (64 KB
+is 16 pages, order 4) or \code{alloc_pages}. The device writes it once, and then the CPU reads all
+64 KB in bulk to copy them to userspace. One mapping and one cache invalidate at the unmap, and the
+CPU reads cached memory at full speed; in coherent memory, which is usually uncached, the 64 KB copy
+would be slow.
+
+\xpart{c} \code{dma_alloc_coherent}. Four bytes that the driver writes and the device reads over
+and over: there is no bulk access to make faster, and a streaming mapping would need a
+\code{dma_sync_single_for_device} after every write. It is exactly the kind of status word
+\secref{c6:app:a6} names.
+
+\xpart{d} It broke the ownership rule: between the map and the unmap the buffer belongs to the
+device, and the CPU read it without borrowing it back. On a machine whose DMA is not coherent with
+the CPU's caches, the read pulls a line of the buffer into the cache holding whatever was in memory
+before the device wrote it, so the peek sees stale data; depending on what the architecture does at
+the unmap, that stale line can also outlive the transfer, and the driver then reads old data where
+the device's should be. Where the buffer is bounced, because the device cannot reach the memory it
+is in, the device writes a bounce buffer and the peek reads the original, which the kernel fills
+only at the unmap. Testing did not catch it because the machines it ran on were coherent, an x86
+desktop, an arm64 system with coherent DMA, or an emulator with no caches to go stale, and nothing
+was bounced; there the read is harmless. It breaks on an SoC whose DMA master is not cache-coherent,
+which is common in embedded parts, and on any system that bounces the buffer. The fix is
+\code{dma_sync_single_for_cpu} before the peek and \code{dma_sync_single_for_device} after it.
+
+\xpart{e} \code{kvmalloc} is exactly wrong here. On the fragmented system they are worried about,
+the \code{kmalloc} attempt fails and \code{kvmalloc} falls back to \code{vmalloc}, whose memory is
+not physically contiguous and cannot be handed to a device. The kernel refuses it:
+\code{dma_map_single_attrs} checks \code{is_vmalloc_addr} and returns \code{DMA_MAPPING_ERROR}
+with the warning ``rejecting DMA map of vmalloc memory'' (\file{include/linux/dma-mapping.h}). So
+the driver works in testing and fails in the field, on precisely the system the change was meant to
+help. Use \code{kmalloc}, allocated once when the device is opened or probed and kept rather than
+per transfer, with its failure handled; or \code{alloc_pages} or \code{dma_alloc_coherent}; or, if
+the device can do scatter-gather, a list of single pages mapped with \code{dma_map_sg}, which needs
+no contiguity at all.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c6:ex:9}{What a wrong address does}{Design}
+
+\xpart{a} Zeros: the course measured \code{id=0x00000000 version=0x0000} (\secref{c6:app:b6}), and
+nothing faults, because \code{0xC} lies in the virt machine's flash window, which starts at
+physical 0 and is \code{0x08000000} bytes long (\file{hw/arm/virt.c} in QEMU), and reads as zeros
+here. The identity check compares \code{0x00000000} with \code{0x51414456}, fails, unwinds,
+\code{iounmap} and then \code{release_mem_region}, and returns \code{-ENODEV}; \code{insmod} reports
+``No such device'' and nothing is left behind. A driver without the check would have carried on as
+if it had the device: written \code{0xDEADBEEF} to \code{SCRATCH}, which here is physical
+$\texttt{0xC} + \texttt{0x30} = \texttt{0x3C}$, into whatever lives there, and then gone on to
+configure and read a device that is not there, failing later and elsewhere with nothing in the log
+pointing at the address.
+
+\xpart{b} What the course recorded (\secref{c6:app:b6}): the read of \code{QA_DEV_ID} at
+\code{0xC001000} raises ``Internal error: synchronous external abort: 0000000096000010'', with the
+program counter in \code{qa_mmio_init+0x98}, called from \code{do_one_initcall}. The syndrome
+decodes as a data abort taken in the kernel (the top six bits, \code{0x25}) on a read, with fault
+status \code{0x10}, a synchronous external abort. Nothing decodes that address: the platform bus
+window is \code{0x0C000000} to \code{0x0DFFFFFF}, and \code{qa-dev} occupies only its first page,
+\code{0x0C000000} to \code{0x0C000FFF}. \code{insmod} is killed. The module is left half-loaded,
+its init never having returned, so it can be neither used nor removed, and it still holds the
+region it claimed. The only way out is a reboot.
+
+\xpart{c} ``It did not crash'' is not evidence that a mapping is right. A wrong address can read
+plausible values with no error, or abort the machine, depending only on what the machine decodes
+there, and the quiet outcome is the more dangerous of the two. The evidence has to be positive: an
+identity register that reads the value the datasheet promises, and a scratch register that reads
+back what was written.
+
+\xpart{d} On a board on your bench, the wrong-but-mapped address may belong to another peripheral,
+so the scratch write can reprogram something real, and the abort costs a power cycle and a walk
+across the room, or a JTAG probe if it happened early in boot; on a product in the field, either
+one is a device that fails or hangs at a customer's, and bringing it back costs a truck or a recall.
+\Secref{c1:app:a4} named what the course gives up by booting in QEMU, the experience of real boards
+and of recovering one, and this is the other side of that trade: here both experiments are free,
+repeatable and two seconds long, which is why the course asks you to run them.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c6:ex:10}{An address worked out by hand}{Cross-check}
+
+\xpart{a} \code{reg} is eight bytes, \code{00 00 00 00 00 00 10 00}, which is two cells,
+\code{0x00000000} and \code{0x00001000}. \code{ranges} is sixteen bytes,
+\code{00 00 00 00 00 00 00 00 0c 00 00 00 02 00 00 00}, which is four cells: \code{0x00000000},
+\code{0x00000000}, \code{0x0C000000} and \code{0x02000000}. \code{reg} has two cells because the
+platform bus declares one address cell and one size cell; \code{ranges} has four because its
+parent address is in the root's two cells. QEMU writes exactly these: \code{ranges} as 0, the high
+and low halves of the bus base, and the bus size (\file{hw/core/sysbus-fdt.c}), and \code{reg} as
+the device's offset on the bus and \code{QA_DEV_MMIO_SIZE} (\file{tools/qa-dev/integrate.py}).
+
+\xpart{b} The two numbers to add are \code{reg}'s address cell and the parent address in
+\code{ranges}, not either size:
+\[
+  \texttt{0x0C000000} + (\texttt{0x00000000} - \texttt{0x00000000}) = \texttt{0x0C000000},
+\]
+the child's address less the child base of the range, added to the parent base. The high parent
+cell is 0, so the full 64-bit address is \code{0x00000000_0c000000}. The window is \code{0x1000}
+bytes, 4096, one page, which is \code{QA_DEV_MMIO_SIZE}; it ends at \code{0x0C000FFF}, well inside
+the bus window, which runs to $\texttt{0x0C000000} + \texttt{0x02000000} - 1 =
+\texttt{0x0DFFFFFF}$.
+
+\xpart{c} Offset 0 is \code{QA_DEV_ID}, and the header gives its value: \code{QA_DEV_ID_MAGIC},
+\code{0x51414456}, which is ``QADV'' in ASCII, big end first (\code{0x51} Q, \code{0x41} A,
+\code{0x44} D, \code{0x56} V). Offset 4 is \code{QA_DEV_VERSION}, for which the header gives only
+the layout, major in bits 15:8 and minor in bits 7:0; but the compatible string it defines,
+\code{qacademy,qa-dev-1.0}, says version 1.0, so predict \code{0x00000100}.
+
+\xpart{d} A correct module at that address prints \code{id=0x51414456 version=0x0100}; those are
+the two strings \code{make test L=L06} looks for in the kernel log.
+
+\xpart{e}
+\begin{itemize}
+  \item It should match. \file{run.sh} computes the same address the same way, prints ``so the
+    registers are at 0xC000000, 4096 bytes'', and loads the module with \code{base=201326592},
+    which is \code{0x0C000000} in decimal. If yours differed, you took \code{reg} at face value
+    (\code{0x0}), added the wrong cell of \code{ranges}, the high half of the parent address or the
+    size, or read the bytes with \code{-tx4}. \file{run.sh} reads raw bytes with \code{od -tx1},
+    reassembles them four at a time, most significant first, and adds \code{reg}'s first cell to
+    the third cell of \code{ranges}.
+  \item \code{-tx1} is right. \code{-tx4} decodes each group of four bytes as a native-endian
+    integer, and the target is little-endian, so every big-endian cell comes back byte-swapped:
+    \code{reg} reads \code{00000000 00100000} and \code{ranges} reads \code{00000000 00000000
+    0000000c 00000002}. The same arithmetic then gives an address of \code{0xC} and a window of
+    \code{0x100000}, a round megabyte. It is plausible because it has the right shape: small hex
+    numbers in the right places, and an address that is a real address, which reads zeros without
+    complaint (\secref{c6:app:b6}).
+  \item The constant is \code{0x0C000000}. It is the parent base in \code{ranges}, declared by the
+    parent node, \code{platform-bus@c000000}; it comes from QEMU's virt machine, which places its
+    platform bus at \code{0x0C000000} with \code{0x02000000} bytes (\file{hw/arm/virt.c}) and
+    writes that into \code{ranges} when it generates the device tree.
+  \item It is in the device tree QEMU generated and handed to the kernel, readable under
+    \file{/sys/firmware/devicetree/base}, and today on \code{insmod}'s command line, where
+    \file{run.sh} put it. For the driver to find out, it has to become a platform driver matching
+    the compatible \code{qacademy,qa-dev-1.0}: the kernel then creates the device from the node,
+    translates its \code{reg} through every \code{ranges} above it into a \code{struct resource},
+    and hands it to \code{probe}, where \code{platform_get_resource}, or
+    \code{devm_platform_ioremap_resource}, gives the driver its registers. That is
+    Chapter~\ref{c10:ch}.
+\end{itemize}
+
+\xpart{f} $\texttt{0x0C000000} + (\texttt{0x1000} - \texttt{0x0}) = \texttt{0x0C001000}$, and
+\code{QA_DEV_ID} still reads \code{0x51414456}. The node is not a separate claim about the device;
+it is QEMU's description of where it put it, generated from the address it assigned
+(\file{tools/qa-dev/integrate.py}). A node that says \code{0x1000} means the device sits one page
+further up, and its identity register is at offset 0 of its window wherever that is: the identity
+belongs to the device, not to the address. Only if the node were edited by hand while the device
+stayed at \code{0x0C000000} would \code{0x0C001000} be the unbacked page of \secref{c6:app:b6}, and
+the read abort.

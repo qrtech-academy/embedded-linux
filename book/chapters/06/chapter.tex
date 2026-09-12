@@ -1,0 +1,52 @@
+% Chapter 6, typeset from lectures/L06: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{Memory, MMIO, and Resource Management}
+\label{c6:ch}
+
+{\large\itshape Where a driver gets memory, how it reaches its hardware, and how it gives both
+back.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item The kernel's memory map, and the difference between an address and a mapping.
+  \item \code{kmalloc}, \code{vmalloc}, \code{kvmalloc}, \code{alloc_pages}: four allocators and how
+    to pick.
+  \item GFP flags as a statement about context, not about urgency.
+  \item \code{request_mem_region}, \file{/proc/iomem}, and what claiming a region does and does not
+    prevent.
+  \item \code{ioremap} and \code{__iomem}: why a register is not memory and must not be treated as
+    such.
+  \item \code{readl} and \code{writel}, ordering, and when \code{_relaxed} is safe.
+  \item \code{devm_*}, the error path it deletes, and why you cannot use it yet.
+  \item Map \code{qa-dev}, read its identity, and prove the mapping is right.
+  \item The DMA API, for the device that reads memory itself; there is nothing to run, because
+    \code{qa-dev} cannot do DMA.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is about the two things a driver needs that its callbacks do not give it: memory, and
+a way to reach its hardware. It explains the difference between a physical and a virtual address,
+which of the four allocators to ask and what each of them fails like, and why the GFP flag is a
+statement about the context you are in rather than about how badly you want the memory. It then
+follows one device from the numbers in its device tree node to a register read: claiming the
+region, mapping it, reading it with accessors the compiler cannot rearrange, and unwinding all of
+it in reverse when something fails. The unwinding is written by hand, because \code{devm_} needs a
+device and a bare module does not have one.
+
+Read \secref{c6:app:a} first; it is kernel memory and the allocators. Its \secref{c6:app:a6}, the
+DMA API, is reading only: \code{qa-dev} cannot do DMA, so nothing in it is measured or tested, and
+the section says what that costs. \Secref{c6:app:b} is MMIO and resource management, and prints the
+device's register map, which every driver from here on is written against. The lab is specified in
+Exercise~\ref{c6:ex:7}: a module, \code{qa_mmio}, that takes the device's physical address as a
+parameter, claims and maps the region, checks the identity register, and writes and reads back
+\code{SCRATCH}. The exercises in \secref{c6:sec:exercises} end with the Cross-check: translate
+\code{qa-dev}'s \code{reg} through its parent's \code{ranges} by hand, predict what the first two
+registers will read, then map them and find out. The lab is done when \code{make test L=L06}
+reports \textbf{PASSED}, with nine checks.
+
+\input{chapters/06/kernel_memory}
+\input{chapters/06/mmio_and_resources}
+\input{chapters/06/summary}
+\input{chapters/06/exercises}

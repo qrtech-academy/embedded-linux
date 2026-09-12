@@ -1,0 +1,47 @@
+% Embedded Linux and Kernel Drivers - the book.
+%
+% Built with LuaLaTeX; see the Makefile. The design is in linuxbook.sty, the front matter in
+% front/, each chapter in chapters/NN/, one file per section, mirroring the appendices of the
+% lecture it is typeset from, and the back matter in back/: the solutions to the exercises that are
+% not code, and the two written papers from exam/. The chapters are grouped into the four parts of
+% the course plan in info/README.md.
+\documentclass[10pt, twoside, openright]{book}
+\usepackage{linuxbook}
+
+\begin{document}
+
+\frontmatter
+\input{front/title}
+\tableofcontents
+\input{front/preface}
+
+\mainmatter
+\part{The System}
+\input{chapters/01/chapter}
+\input{chapters/02/chapter}
+\input{chapters/03/chapter}
+
+\part{Writing a Driver}
+\input{chapters/04/chapter}
+\input{chapters/05/chapter}
+\input{chapters/06/chapter}
+
+\part{Concurrency, Interrupts and Time}
+\input{chapters/07/chapter}
+\input{chapters/08/chapter}
+\input{chapters/09/chapter}
+
+\part{Fitting into the Kernel}
+\input{chapters/10/chapter}
+\input{chapters/11/chapter}
+\input{chapters/12/chapter}
+
+\appendix
+\input{back/solutions/chapter}
+\input{back/exam/about}
+\input{back/exam/paper_a}
+\input{back/exam/paper_b}
+\input{back/exam/answers_a}
+\input{back/exam/answers_b}
+
+\end{document}

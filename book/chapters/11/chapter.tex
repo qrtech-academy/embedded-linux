@@ -1,0 +1,43 @@
+% Chapter 11, typeset from lectures/L11: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{Kernel Frameworks}
+\label{c11:ch}
+
+{\large\itshape Why your driver probably should not be a character device.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item What a subsystem gives you: a stable userspace ABI, existing tools, and power management.
+  \item The cost of the shortcut: an \code{ioctl} you invented is an ABI you maintain forever.
+  \item GPIO and pinctrl, and what a \code{gpiochip} has to provide.
+  \item clk and regulator, and why a driver should not be turning power on by writing a register.
+  \item I2C and SPI, and \code{regmap} as the thing that makes a register map declarative.
+  \item IIO for anything that samples; input, MTD and watchdog in a sentence each.
+  \item How to tell which subsystem a device belongs to, and what to do when the answer is none.
+  \item Register with two frameworks, and drop the character device Chapters~\ref{c5:ch}
+    and~\ref{c9:ch} built.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is about why a driver should usually not be a character device at all. It sets out
+what a subsystem gives a driver in exchange for implementing its interface: a documented ABI, tools
+that already exist, and a place where userspace knows to look. It sets that against what an
+\code{ioctl} of your own costs, tours the subsystems worth recognising, and registers \code{qa-dev}
+with two of them, IIO and GPIO. It ends with how to choose a subsystem, what to do when none fits,
+and what a framework does not do for you, including what it costs to read a value through one.
+
+\Secref{c11:app:a} is the whole of the material, and the argument for it; read it first. The lab is
+specified in Exercise~\ref{c11:ex:6}: the Chapter~\ref{c10:ch} driver rewritten as
+\file{qa_frameworks.c}, registering one IIO channel and an eight-line \code{gpio_chip}, and
+presenting no character device of its own; Exercise~\ref{c11:ex:7} then drives it with programs
+written without any knowledge of it. The exercises in \secref{c11:sec:exercises} end with the
+Cross-check: predict what \code{in_voltage0_raw} reads in \code{qa-dev}'s counter mode, read it,
+and account for a sample rate that falls short of the programmed one by an amount you will have
+seen before. The lab is done when \code{make test L=L11} reports \textbf{PASSED}, with twenty-two
+checks, eight of them from a GPIO tester that contains no reference to your driver.
+
+\input{chapters/11/frameworks}
+\input{chapters/11/summary}
+\input{chapters/11/exercises}

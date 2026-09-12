@@ -1,0 +1,46 @@
+% Chapter 10, typeset from lectures/L10: the README is the opener and the closing review, and
+% each appendix is a section, in the same order and with the same subsections. The README's lecture
+% plan is the plan for the live hour rather than the material, and is not typeset.
+
+\chapter{The Device Model and the Device Tree}
+\label{c10:ch}
+
+{\large\itshape How a driver finds its hardware without being told where it is.\par}
+
+\begin{chapterbox}{In this chapter}
+\begin{itemize}
+  \item Bus, device and driver, and the match that puts the three together.
+  \item kobjects and sysfs, and the reference counting under a device's lifetime.
+  \item \code{probe} and \code{remove}: what may be done in each, and what must not.
+  \item The platform bus, and what ``platform device'' really means.
+  \item \code{of_match_table}, module aliases, and how autoloading actually happens.
+  \item Device tree syntax: \code{compatible}, \code{reg}, \code{interrupts}, phandles,
+    \code{\#address-cells}, \code{ranges}.
+  \item Bindings, dt-schema, and where the DTB enters the boot flow.
+  \item Delete every address from your driver and make it probe anyway.
+\end{itemize}
+\end{chapterbox}
+
+This chapter is about how a driver finds its hardware without containing a single address. It
+explains the device model's three parts, the bus, the device and the driver, and the match that
+joins them; what \code{probe} and \code{remove} may do, and why everything taken with \code{devm_}
+is released when the device is unbound rather than when the module goes; and the four steps that
+turn a device appearing into a module loading. It then reads the device tree that describes the
+hardware: \code{compatible}, \code{reg} and the cells its parent declares, the translation through
+\code{ranges} that Chapter~\ref{c6:ch} did by hand, and an interrupt specifier that only its
+controller can decode.
+
+Read \secref{c10:app:a} first; it is the device model. \Secref{c10:app:b} is the device tree, and
+ends where the driver takes its address and its interrupt out of it. The lab is specified in
+Exercise~\ref{c10:ex:6}: the Chapter~\ref{c8:ch} driver rewritten as a platform driver,
+\file{qa_platform.c}, with no address and no interrupt number anywhere in its source; and
+Exercise~\ref{c10:ex:7} unbinds and rebinds it to show what \code{devm_} is attached to. The
+exercises in \secref{c10:sec:exercises} end with the Cross-check: work out the device's physical
+address and interrupt by hand from the raw bytes of the device tree, then compare them with the
+name the kernel gave the device and with what \code{probe} was handed. The lab is done when
+\code{make test L=L10} reports \textbf{PASSED}, with nineteen checks.
+
+\input{chapters/10/device_model}
+\input{chapters/10/device_tree}
+\input{chapters/10/summary}
+\input{chapters/10/exercises}

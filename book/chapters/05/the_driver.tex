@@ -1,0 +1,193 @@
+% Section 5.2, from lectures/L05/appendix/b_the_driver.md.
+
+\section{The Driver, Specified}
+\label{c5:app:b}
+
+This is what to build. Everything here is prose rather than code, because the code is yours; what
+the course provides is the contract, the header that declares it, and the tests that check it.
+
+Two modules, in this order:
+\begin{enumerate}
+  \item \textbf{\file{qa_fifo.c}}, a byte ring buffer with no kernel API in it beyond allocation.
+    Declared by \file{lectures/L05/lab/qa_fifo.h} and checked by
+    \file{lectures/L05/lab/qa_fifo_kunit.c}, both of which ship with the course.
+  \item \textbf{\file{qa_chardev.c}}, a character device that exposes one of those buffers at
+    \file{/dev/qa_fifo}. Checked by \file{lectures/L05/lab/user/qa_fifo_test.c}, which also ships.
+\end{enumerate}
+Write them in that order. The first is pure logic and can be got completely right before anything
+touches the kernel's device model; the second is where the kernel API is, and debugging both at once
+is what makes a first driver miserable.
+
+\subsection{The ring buffer}
+\label{c5:app:b1}
+
+The declarations are in \file{lectures/L05/lab/qa_fifo.h}, and the prose in that header is part of
+the specification rather than a comment on it. Here it is, typeset straight from the repository:
+
+\cfile{lectures/L05/lab/qa_fifo.h}
+
+\noindent What follows is what the header cannot say.
+
+\textbf{The struct is opaque.} \code{struct qa_fifo} is declared in the header and defined only in
+your \code{.c}. Nothing outside may look inside it, which means you choose the layout, and the tests
+cannot accidentally depend on your choices. It also means every access goes through a function,
+which is the habit that makes Chapter~\ref{c7:ch}'s locking tractable: there is exactly one place
+per operation to put a lock.
+
+\textbf{Every function must be exported.} The KUnit suite is a separate module, so each function in
+the header needs an \code{EXPORT_SYMBOL_GPL}, exactly as in Chapter~\ref{c4:ch}. Forgetting this
+produces \code{Unknown symbol} at \code{insmod} time for the \emph{test} module, and the lab's
+\file{run.sh} distinguishes that case from a missing KUnit framework and says which it is.
+
+\textbf{The capacity is what you asked for.} A FIFO created with capacity 4 must hold 4 bytes, not
+3. The usual ring-buffer implementation keeps head and tail indices and cannot distinguish full from
+empty, so it wastes one slot; that implementation fails \code{qa_fifo_uses_its_whole_capacity}.
+Keeping a \emph{level} alongside the head, rather than a tail, is one way out and there are others.
+
+\textbf{Short is not an error.} \code{qa_fifo_put} given more than fits copies what fits and returns
+that count; \code{qa_fifo_get} on a partly filled buffer copies what is there. Neither is a failure,
+and the caller is expected to read the return value. This is the same contract \code{read()} and
+\code{write()} have, deliberately, so that the character device can pass its arguments almost
+straight through.
+
+\textbf{Wrapping is the part that gets written wrong.} Fill, drain, and fill again: the second fill
+straddles the end of the storage. An implementation that tracks positions without wrapping passes
+every test in the suite up to the seventh and fails the eighth.
+
+\subsection{The character device}
+\label{c5:app:b2}
+
+\file{qa_chardev.c} registers one device, backed by one \code{qa_fifo}.
+
+\subsubsection{What it must provide}
+\label{c5:app:b:what-it-must-provide}
+
+\begin{narrowtable}{@{}lll@{}}
+  \thead{Member} & \thead{Required} & \thead{Behaviour} \\
+  \midrule
+  \code{.owner} & \textbf{Yes} & \code{THIS_MODULE}. See \S\ref{c5:app:a3} \\
+  \code{.open} & Yes & Succeeds. Marks the file as a stream \\
+  \code{.read} & Yes & Below \\
+  \code{.write} & Yes & Below \\
+  \code{.release} & No & There is no per-open state to release \\
+\end{narrowtable}
+
+\subsubsection{Module parameter}
+\label{c5:app:b:module-parameter}
+
+One parameter, \code{capacity}, an \code{int}, default \textbf{256}, readable but not writable
+through sysfs. It is the capacity of the FIFO created at load time. The userspace tester does not
+assume a value; it measures what it can write and reports it, so changing the default does not break
+the test.
+
+\subsubsection{\code{open}}
+\label{c5:app:b:open}
+
+Succeed, and mark the file as a stream. \code{stream_open()} does exactly this and is the one line
+the function needs. Note that \code{no_llseek}, which most older material uses for this, \textbf{was
+removed and does not exist in 6.12}.
+
+A FIFO has no position, and a driver that silently accepts an offset is lying about what it is. Two
+different things refuse one, and it is worth knowing which does what. Since 6.0 the kernel refuses
+\code{lseek} with \code{-ESPIPE} on any file whose \code{file_operations} has no \code{.llseek},
+which yours does not; the userspace tester checks that, and it passes with or without
+\code{stream_open}. \textbf{\code{stream_open} is what refuses the rest.} It makes \code{pread} and
+\code{pwrite} fail with \code{-ESPIPE} too, where without it they would succeed and read the FIFO as
+though the offset meant something, and it tells the VFS there is no file position at all, so the
+\code{pos} your \code{read} and \code{write} are handed is \code{NULL} and must not be touched.
+
+\subsubsection{\code{read}}
+\label{c5:app:b:read}
+
+Given a userspace buffer and a count:
+\begin{itemize}
+  \item A \code{count} of 0 returns 0. There is nothing to do and it is not an error.
+  \item \textbf{If the FIFO is empty, return \code{-EAGAIN}.} Not 0.
+  \item Otherwise take up to \code{count} bytes out of the FIFO and copy them to userspace, and
+    return how many. Fewer than \code{count} is normal.
+  \item If the copy fails, return \code{-EFAULT}.
+\end{itemize}
+You cannot copy straight from the FIFO to the user pointer, because \S\ref{c5:app:a5} says you may
+not touch that pointer directly. So there is a bounce buffer in the middle: allocate, take from the
+FIFO into it, \code{copy_to_user} out of it, free. Cap the allocation at something sensible; a
+program is allowed to ask for a gigabyte and you are not obliged to allocate one.
+
+\textbf{The \code{-EAGAIN} is the whole chapter.} Returning 0 means end of file, and every reader
+believes it. Chapter~\ref{c9:ch} replaces this with blocking, at which point \code{-EAGAIN} becomes
+the answer only for a caller that opened with \code{O_NONBLOCK}.
+
+\subsubsection{\code{write}}
+\label{c5:app:b:write}
+
+The mirror image:
+\begin{itemize}
+  \item A \code{count} of 0 returns 0.
+  \item \textbf{If the FIFO is full, return \code{-ENOSPC}.}
+  \item Otherwise copy up to \code{count} bytes in from userspace and return how many were accepted.
+  \item If the copy fails, return \code{-EFAULT}.
+\end{itemize}
+Note the asymmetry with \code{read}: a full FIFO is \code{-ENOSPC} and an empty one is
+\code{-EAGAIN}. Both say ``not now'', but a reader can reasonably wait for data to arrive, whereas a
+writer facing a buffer nobody is draining has a different problem. The codes are different because
+userspace does different things with them.
+
+\subsubsection{Init, in the right order}
+\label{c5:app:b:init-in-the-right-order}
+
+Five things to acquire, and the order is a constraint rather than a preference:
+\begin{enumerate}
+  \item Create the FIFO.
+  \item Allocate a device number \textbf{dynamically}, with \code{alloc_chrdev_region}.
+  \item \code{cdev_init} and \code{cdev_add}.
+  \item \code{class_create}.
+  \item \code{device_create}, which is what makes \file{/dev/qa_fifo} appear.
+\end{enumerate}
+\textbf{Everything your callbacks touch must exist before step 3.} \code{cdev_add} makes the device
+live; from that instant a \code{read()} can arrive, and it will arrive before your init function has
+returned if anything is watching \file{/dev}. Creating the FIFO after adding the cdev is a race you
+will not reproduce on demand and will hit eventually.
+
+Print the major and minor you were given at the end, with \code{pr_info}. You will want it, and it
+is different on every boot.
+
+\subsubsection{Exit, in reverse}
+\label{c5:app:b:exit-in-reverse}
+
+Undo all five, in the opposite order, and free the FIFO last. Any error path in init must unwind
+only what it actually acquired; see \S\ref{c5:app:a7} for the \code{goto} ladder that expresses
+this.
+
+\subsection{What the tests check, and what they do not}
+\label{c5:app:b3}
+
+\textbf{The KUnit suite} (\file{lectures/L05/lab/qa_fifo_kunit.c}) is ten cases against the ring
+buffer, run inside the kernel. It says so at the top, and it is worth repeating here: \textbf{it
+checks nothing about concurrency.} Every case runs on one thread. A ring buffer that passes all ten
+and is destroyed by two writers passes all ten. That is Chapter~\ref{c7:ch}.
+
+\textbf{The userspace tester} (\file{lectures/L05/lab/user/qa_fifo_test.c}) is a statically linked
+ARM64 program that opens the node and makes one system call at a time. It exists as a program rather
+than as shell because several of the things a driver must get right are invisible from a shell: a
+\code{read} returning 0 and a \code{read} returning \code{-EAGAIN} both produce no output from
+\code{cat}, and only a program can look at \code{errno}.
+
+Between them they do \textbf{not} check: concurrency, what happens under memory pressure, whether
+your error paths unwind correctly, or whether you leak the FIFO on an init failure. Reading the
+tests to find out what they are blind to is a habit worth forming, and one of the exercises asks you
+to do exactly that.
+
+\subsection{Working order}
+\label{c5:app:b4}
+
+\begin{enumerate}
+  \item Write \file{qa_fifo.c} and get the KUnit suite to \textbf{10 of 10}. Nothing below matters
+    until it does.
+  \item Write \file{qa_chardev.c} with \code{open}, \code{read} and \code{write}, and load it. Check
+    \file{/proc/devices} for your major and \file{/dev/qa_fifo} for the node.
+  \item Run \file{./qa_fifo_test} on the target by hand before running \code{make test}; its output
+    is more informative than the harness's summary.
+  \item \code{make test L=L05} reports \textbf{PASSED}, with eighteen checks.
+\end{enumerate}
+If the KUnit module refuses to load with \code{Unknown symbol qa_fifo_create}, you have not exported
+the functions. If it refuses with \code{Unknown symbol kunit_...}, the framework is not loaded and
+\file{run.sh} will say so.

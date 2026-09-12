@@ -1,0 +1,270 @@
+% Solutions to the Chapter 1 exercises that are not code, from lectures/L01/appendix/c_exercises.md.
+% Exercises 1.6 and 1.7 are Code and are not answered; see chapter.tex for why.
+
+\section{Chapter 1: Embedded Linux, and the Licence You Ship With It}
+\label{sol:sec:c1}
+Answers to the exercises in \secref{c1:sec:exercises}. Exercises~\ref{c1:ex:6} and~\ref{c1:ex:7}
+are Code, and are checked by running them: the first against the total its Check yourself line
+gives, the second on the target.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c1:ex:1}{The four pieces}{Recall}
+
+The \textbf{bootloader} brings up DRAM, finds the kernel, and hands it a device tree. The
+\textbf{kernel} drives the hardware and provides the system call interface. The \textbf{root
+filesystem} is everything that runs as a process, starting with PID 1. The \textbf{toolchain}, a
+compiler, a C library, a linker and a set of headers, builds the other three and never ships, and
+it fixes the ABI they share.
+
+\xpart{a} The kernel. It is stored in the root filesystem, and that is the plausible wrong answer:
+it is built by the kernel's build from the kernel's tree, it runs in the kernel's address space,
+and it loads only into the kernel it was built for, which is why its path carries the version,
+6.12.30. Where a file is stored does not decide which piece it belongs to.
+
+\xpart{b} The bootloader: \file{u-boot.img} is U-Boot itself, step 3 of the chain in
+\secref{c1:app:a2}.
+
+\xpart{c} The toolchain. It lives on the build machine, and nothing on the device ever runs it.
+
+\xpart{d} The root filesystem. \file{/init} is PID 1, the first userspace process; on this target it
+is the shell script \file{tools/target/init}, which \file{ci/rootfs.sh} copies in.
+
+\xpart{e} The kernel, although it travels beside the kernel rather than inside it. Its source lives
+in the kernel tree, the kernel's build compiles it, and it is written against the bindings the
+kernel documents, so it changes when the kernel does. The bootloader is what loads it and hands it
+over (\secref{c1:app:a3}), and on a real board U-Boot often edits it on the way, filling in the
+memory size and the command line, so ``the bootloader'' is a defensible answer if it is argued that
+way. On this target it is neither: QEMU writes it (\secref{c1:app:a4}).
+
+\xpart{f} The root filesystem. \file{/bin/busybox} is the whole userland of this target.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent2]{c1:ex:2}{Why there are two bootloaders}{Recall}
+
+\xpart{a} U-Boot is around a megabyte and must run from DRAM, and DRAM does not work until its
+controller has been configured, while the only memory there is at power-on is a few tens of
+kilobytes of SRAM on the SoC. The SPL is a bootloader small enough to run from that SRAM, and its
+whole job is to initialise the DRAM controller and load U-Boot into the DRAM it has just brought up.
+
+\xpart{b} The boot stops at the first handover, from the boot ROM to the next stage, before U-Boot
+has printed a line. The ROM loads the next stage into SRAM from wherever it is told to look; with
+the SPL deleted it finds either nothing it accepts or U-Boot, which does not fit in SRAM and needs
+the DRAM nobody has initialised. The board produces no bootloader output at all and looks dead, and
+the space saved is the SPL's, around 64 KB.
+
+\xpart{c} Recoverable: a boot ROM that falls back to loading over USB or a UART, or from a removable
+SD card, when the flash holds nothing it can boot, or strap pins that force it to; a bad bootloader
+can then always be replaced from outside. Not recoverable: a ROM that boots only from soldered flash
+and has no fallback. One bad write to the bootloader partition and the board is a coaster, short of
+a JTAG probe or a soldering iron.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent3]{c1:ex:3}{What the toolchain triplet promises}{Hand calculation}
+
+\xpart{a} \code{aarch64} is the architecture: 64-bit ARM, little-endian, since the big-endian
+variant is \code{aarch64_be}. \code{linux} is the operating system the output runs on: it makes
+Linux system calls and follows Linux's conventions for an executable. \code{gnu} is the C library
+and the ABI: glibc, and the GNU/Linux ABI for AArch64, whose dynamically linked programs are started
+by \file{/lib/ld-linux-aarch64.so.1}. The full form has a vendor field as well,
+\code{aarch64-unknown-linux-gnu}, which the short name leaves out.
+
+\xpart{b} \code{arm} is 32-bit ARM, in practice a Cortex-M or Cortex-R microcontroller. \code{none}
+is the operating system, and there is none: the binary is written for bare metal. \code{eabi} is the
+ARM Embedded ABI, the calling convention and object format for code with no operating system beneath
+it; no C library is named, and in practice it is newlib. So it is meant for a microcontroller, or
+for a stage that runs before any operating system does. It cannot run on Linux as a program: nothing
+in it makes a Linux system call, its startup code and linker script assume it owns the machine from
+a fixed address, and there is no Linux loader or C library for it to be started by.
+
+\xpart{c} It builds, and fails at run time, when the target's dynamic loader starts it. glibc
+versions its symbols, and a program records the versions of every symbol it was linked against;
+since glibc 2.34 even \code{__libc_start_main}, which every dynamically linked program calls,
+carries the version \code{GLIBC_2.34}. The 2.31 on the target does not have it, so the loader
+refuses before \code{main} runs, with a message of the form \code{version `GLIBC_2.34' not found
+(required by ./prog)}. Nothing at build time can see this coming, because the build only ever saw
+2.36. The fix is to build against a C library no newer than the oldest target's, or to link
+statically, which is what this course does for its own test programs, because its target has no C
+library at all.
+
+\xpart{d} It installs the package for the build machine's architecture: its headers in
+\file{/usr/include}, and an x86-64 library in \file{/usr/lib/x86_64-linux-gnu}. Debian's
+cross-compiler searches \file{/usr/include} (\secref{c1:app:a5}), so the missing header may even be
+found, and that is the trap: the failure moves to the link, which cannot find \code{-lfoo}, because
+the only \code{libfoo} is an x86-64 library in a directory the cross linker never searches and could
+not link against if it did. If the missing header is one of the few that differ by architecture,
+which Debian keeps in \file{/usr/include/x86_64-linux-gnu}, the error does not move at all. What
+works is to install the library \emph{for the target}: on Debian, \code{dpkg --add-architecture
+arm64}, an \code{apt update}, and then \code{apt install libfoo-dev:arm64}, which puts the arm64
+library in \file{/usr/lib/aarch64-linux-gnu}, where the cross-compiler does look; or cross-compile
+\code{libfoo} and install it into the toolchain's sysroot. For this course's target, whose root
+filesystem holds no libraries, the program must also link it statically.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c1:ex:4}{What leaves the building}{Design}
+
+\xpart{a} Row by row:
+\begin{itemize}
+  \item \textbf{U-Boot}: its complete corresponding source, meaning the version you shipped with
+    your board port in it, the configuration you built it with, and the scripts and instructions
+    that build it. It is ``or later'', so you may comply on GPL-2.0's terms.
+  \item \textbf{The kernel}: the same, at the exact version shipped with every patch applied,
+    including the driver you added, which is in the tree and therefore part of the work; the
+    \code{.config}; the device tree sources; and which toolchain and which commands build it
+    (\secref{c1:app:b5}).
+  \item \textbf{BusyBox}: its source at the version shipped, and the \code{.config} you built it
+    with, which is one of the scripts that control its compilation.
+  \item \textbf{\code{libcurl}}: no source. Its licence is permissive and asks only that its
+    copyright and permission notice go with every copy, which for a binary means your
+    documentation.
+  \item \textbf{The logging daemon}: nothing. It is a separate process making system calls
+    (\secref{c1:app:b3}).
+  \item \textbf{Your kernel module}: that depends on the choice, and the choice has consequences.
+    Declared GPL, it is published like the kernel. Declared proprietary, it is published nowhere,
+    and you carry what \secref{c1:app:b7} lists, a tainted kernel, no \code{EXPORT_SYMBOL_GPL}
+    symbols and its maintenance against a kernel API that changes every release, and a
+    derivative-work argument that is contested rather than settled in your favour;
+    Exercise~\ref{c1:ex:5} works that argument through.
+\end{itemize}
+
+\xpart{b} No. The obligation attaches to distributing the binary, not to modifying it: whoever
+receives BusyBox from you is entitled to its source whether or not you changed a line. Being
+unmodified makes compliance easy, since the answer is the upstream release at the version you
+shipped and your \code{.config}; it does not make it optional.
+
+\xpart{c} Neither does. \code{libcurl}'s licence is permissive, so linking to it, dynamically or
+statically, puts no obligation on the daemon's source, only the notice from a). The \code{ioctl} is
+a system call: the daemon uses your module through the kernel's system call interface, which is
+exactly the boundary the syscall note draws, and \secref{c1:app:b3} names \code{ioctl} in its list.
+The module is yours in any case, so nobody else's licence reaches the daemon through it.
+
+\xpart{d} Keep, for every release you shipped, the complete corresponding source of every GPL
+component exactly as it was built: the kernel with its patches, your driver, its \code{.config} and
+its device tree sources; U-Boot with the board port and its configuration; BusyBox and its
+\code{.config}; your module, if you made it GPL; and the build scripts and the toolchain, or enough
+to reproduce them, that turned all of that into the image you shipped. If you satisfy the GPL with a
+written offer, GPL-2.0 section~3(b) makes the offer valid for at least three years and open to any
+third party, not only to customers, and every unit you ship carries it, so in practice you keep the
+source until three years after the last unit ships (\secref{c1:app:b5}). The engineering consequence
+is that your build must still work then: the toolchain archived rather than named, every source
+pinned, the \code{.config} kept as a build artefact, and a record of which source went into which
+shipped unit.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent4]{c1:ex:5}{Where the boundary falls}{Design}
+
+\xpart{a} Two works. The syscall note settles it: user programs that use kernel services by normal
+system calls do not fall under the heading of derived work (\secref{c1:app:b3}). It is the
+copyright holders' own statement rather than a reading of the GPL, and it is not contested.
+
+\xpart{b} One work. Static linking puts your code and the library into one binary, and that is
+broadly accepted as a derivative work of both (\secref{c1:app:b2}). Distributing it means
+distributing the whole under GPL-2.0, source included.
+
+\xpart{c} Two works, and the licence says so. The LGPL-2.1 treats a program that only links to the
+library as a work that uses the library, which may carry any licence you like, provided you publish
+the library's source and let the recipient relink your program against a modified copy of the
+library, which a dynamic link allows as it stands. This is the question the LGPL exists to settle.
+
+\xpart{d} Contested. The Free Software Foundation holds that dynamically linking against a GPL
+library creates a derivative work; others disagree, and nothing has settled it
+(\secref{c1:app:b2}). The engineering answer is not to ship it without a lawyer's opinion, or to
+find a library under the LGPL or a permissive licence that does the same job.
+
+\xpart{e} Contested, with most of the weight on one work. A module is compiled against the kernel's
+headers, runs in its address space and calls its functions directly, and the widely held view among
+kernel developers is that it is a derivative work (\secref{c1:app:b4}). Whatever a court would
+decide, the kernel enforces a version of the argument itself: a proprietary module taints the kernel
+and cannot use \code{EXPORT_SYMBOL_GPL} symbols.
+
+\xpart{f} Two works: mere aggregation (\secref{c1:app:b2}). Sharing a filesystem image does not make
+two programs one work, and nobody seriously argues otherwise.
+
+% ------------------------------------------------------------------------------------------
+\solution[fillaccent]{c1:ex:8}{An audit by hand against an audit by script}{Cross-check}
+
+\xpart{a} Eight of the ten carry a tag, each on its first line in a \code{//} comment. Two carry
+none, and their licence is in the header comment instead.
+
+\begin{narrowtable}{@{}lll@{}}
+  \thead{File} & \thead{Identifier} & \thead{Where} \\
+  \midrule
+  \file{rtc-ds1307.c} & \code{GPL-2.0-only} & Tag, line 1 \\
+  \file{rtc-pl031.c} & \code{GPL-2.0-or-later} & Tag, line 1 \\
+  \file{rtc-starfire.c} & None & Header comment: ``License: GPL'' \\
+  \file{rtc-rs5c313.c} & None & Header comment: the GPL, and see \file{COPYING} \\
+  \file{rtc-cmos.c} & \code{GPL-2.0-or-later} & Tag, line 1 \\
+  \file{rtc-m41t80.c} & \code{GPL-2.0-only} & Tag, line 1 \\
+  \file{rtc-pcf8563.c} & \code{GPL-2.0-only} & Tag, line 1 \\
+  \file{rtc-abx80x.c} & \code{GPL-2.0} & Tag, line 1 \\
+  \file{rtc-max77686.c} & \code{GPL-2.0+} & Tag, line 1 \\
+  \file{rtc-s35390a.c} & \code{GPL-2.0-or-later} & Tag, line 1 \\
+\end{narrowtable}
+
+\noindent \code{GPL-2.0} is the old spelling of \code{GPL-2.0-only} and \code{GPL-2.0+} the old
+spelling of \code{GPL-2.0-or-later}, so the ten are four GPL-2.0-only, four GPL-2.0-or-later and two
+untagged: four strings, and two licences.
+
+\xpart{b} From the sample alone: two licences, GPL-2.0-only and GPL-2.0-or-later, in about equal
+shares, and about one file in five with no tag.
+
+\xpart{c} A script that meets Exercise~\ref{c1:ex:6} reports this over the 184 files:
+
+\begin{narrowtable}{@{}lrl@{}}
+  \thead{Identifier} & \thead{Files} & \thead{Of which merged} \\
+  \midrule
+  \code{GPL-2.0-only} & 122 & 49 spelled \code{GPL-2.0} \\
+  \code{GPL-2.0-or-later} & 59 & 28 spelled \code{GPL-2.0+} \\
+  \code{LGPL-2.1+} & 1 & \\
+  Untagged & 2 & \file{rtc-rs5c313.c}, \file{rtc-starfire.c} \\
+  \midrule
+  Total & 184 & \\
+\end{narrowtable}
+
+\noindent The counts check against the total: $122 + 59 + 1 + 2 = 184$. No file in the directory
+carries a second tag, so taking the first loses nothing here. The single \code{LGPL-2.1+} is
+\file{lib_test.c}, the directory's KUnit test; it is the old spelling of LGPL-2.1-or-later, which
+the exercise does not require the script to merge and a careful script merges anyway.
+
+\xpart{d}
+\begin{itemize}
+  \item \textbf{Strings and licences.} Five distinct strings: \code{GPL-2.0-only}, \code{GPL-2.0},
+    \code{GPL-2.0-or-later}, \code{GPL-2.0+} and \code{LGPL-2.1+}. Three distinct licences:
+    GPL-2.0-only, GPL-2.0-or-later and LGPL-2.1-or-later. The strings count spellings, and the
+    difference is the number of licences that appear under two spellings, here the two GPL ones, so
+    $5 = 3 + 2$. The string count can never be lower than the licence count, and a report that
+    calls strings licences overstates what the tree is under.
+  \item \textbf{The untagged files} are \file{rtc-rs5c313.c} and \file{rtc-starfire.c}, both of them
+    in the sample, and the routes differ. \file{rtc-rs5c313.c}'s header says it is subject to the
+    GNU GPL and sends you to \file{COPYING}, which is GPL-2.0-only; its \code{MODULE_LICENSE("GPL")}
+    agrees, but cannot tell ``only'' from ``or later'' by itself, as \file{include/linux/module.h}
+    says. \file{rtc-starfire.c}'s header says only ``License: GPL'', with no version, and the file
+    has no \code{MODULE_LICENSE} at all, since it can only be built in; its version comes from the
+    rule in \file{Documentation/process/license-rules.rst} that the licence in \file{COPYING}
+    applies to the kernel source as a whole. Both end at GPL-2.0-only, one because its header says
+    so and the other because nothing says otherwise.
+  \item \textbf{The sample did not predict the whole.} It had 40\% GPL-2.0-only, 40\%
+    GPL-2.0-or-later and 20\% untagged. The directory is $122/184 = 66.3\%$ GPL-2.0-only,
+    $59/184 = 32.1\%$ GPL-2.0-or-later, $1/184 = 0.5\%$ LGPL and $2/184 = 1.1\%$ untagged. The
+    sample over-counted untagged files eighteen times over, under-counted GPL-2.0-only, and missed
+    a licence altogether. That is what a sample of names you recognise does: the names you know are
+    the old, widely used drivers, and old files are the ones that predate the tags and still carry
+    a licence in a header comment. The bulk of the directory is newer drivers tagged
+    \code{GPL-2.0-only}, which are exactly the names nobody recognises. A random ten would have
+    held both untagged files with probability $\frac{10 \times 9}{184 \times 183} = 90/33{,}672$,
+    about 1 in 370, so this sample was chosen, not drawn.
+\end{itemize}
+
+\xpart{e} There are three separate problems, and any two answer it:
+\begin{itemize}
+  \item \textbf{Nobody tags a file \code{Proprietary}.} SPDX has no such identifier, and a
+    proprietary file carries no tag at all, or a \code{LicenseRef-} of its own. The absence of the
+    string proves nothing; the files that could be proprietary are the untagged ones, which have to
+    be read, as in d).
+  \item \textbf{One directory is not the tree.} The script looked at the \code{.c} and \code{.h}
+    files of \file{drivers/rtc}. Every other directory, and every file that is not C, from assembly
+    and device tree sources to scripts, went unexamined.
+  \item \textbf{The tree is not the product.} What ships includes things with no source in the tree
+    at all: firmware that drivers load at run time, much of it under licences that are not free;
+    out-of-tree and vendor modules, whose \code{MODULE_LICENSE} is in a binary no scan of sources
+    will see; and everything else in the image.
+\end{itemize}
